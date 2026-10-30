@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+# Match the supported GitHub Pages Jekyll environment for optional local preview.
+gem "github-pages", group: :jekyll_plugins
+gem "webrick", "~> 1.8"

@@ -1,0 +1,17 @@
+version = 1
+
+[schedules.default]
+cron = "17 * * * *"
+timezone = "UTC"
+
+[[rules]]
+id = "follow-a-public-curator"
+enabled = false
+source = "https://mdblist.com/lists/public-curator/public-films"
+destination = "https://trakt.tv/users/your-account/lists/your-latest-films"
+direction = "source_to_destination"
+deletion_policy = "additions_only"
+profile = "default"
+allow_empty = false
+max_delete_count = 100
+max_delete_fraction = 0.5

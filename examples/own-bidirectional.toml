@@ -1,0 +1,18 @@
+version = 1
+
+[schedules.default]
+cron = "23 */6 * * *"
+timezone = "UTC"
+
+[[rules]]
+id = "my-lists-both-ways"
+enabled = false
+source = "https://mdblist.com/lists/your-account/your-static-films"
+destination = "https://trakt.tv/users/your-account/lists/your-films"
+direction = "bidirectional"
+deletion_policy = "mirror"
+order_authority = "source"
+profile = "default"
+allow_empty = false
+max_delete_count = 50
+max_delete_fraction = 0.25

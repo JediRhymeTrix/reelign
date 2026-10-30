@@ -1,0 +1,86 @@
+name: Reelign sync worker
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        type: string
+        default: ''
+      rule:
+        type: string
+        default: ''
+      dry_run:
+        type: boolean
+        default: false
+      bootstrap:
+        type: boolean
+        default: false
+      maintenance:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reelign-state
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Validate configuration and generated schedules
+        run: |
+          python manage.py validate
+          python manage.py render-workflows --check
+      - name: Require explicit enablement for unattended apply
+        if: ${{ !inputs.dry_run && !inputs.maintenance && vars.REELIGN_ENABLED != 'true' }}
+        run: |
+          echo 'Run a successful preview, then set REELIGN_ENABLED=true before applying.' >&2
+          exit 1
+      - name: Check out encrypted state
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: cron-state
+          path: state-checkout
+          persist-credentials: true
+      - name: Synchronize selected lists
+        env:
+          MDBLIST_API_KEY: ${{ secrets.MDBLIST_API_KEY }}
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          TRAKT_OAUTH_JSON: ${{ secrets.TRAKT_OAUTH_JSON }}
+          SYNC_STATE_KEY: ${{ secrets.SYNC_STATE_KEY }}
+          PROFILE: ${{ inputs.profile }}
+          RULE: ${{ inputs.rule }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          MAINTENANCE: ${{ inputs.maintenance }}
+        shell: bash
+        run: |
+          args=()
+          if [[ "$DRY_RUN" == 'true' ]]; then args+=(--dry-run); fi
+          if [[ "$BOOTSTRAP" == 'true' ]]; then args+=(--bootstrap-state); fi
+          if [[ "$MAINTENANCE" == 'true' ]]; then args+=(--maintenance-only); fi
+          if [[ -n "$PROFILE" ]]; then args+=(--profile "$PROFILE"); fi
+          if [[ -n "$RULE" ]]; then args+=(--rule "$RULE"); fi
+          python run.py --state state-checkout/jobs/list-sync/state.enc \
+            --state-repo state-checkout "${args[@]}"
+      - name: Preserve encrypted recovery state on failure
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: encrypted-recovery-${{ github.run_id }}
+          path: state-checkout/jobs/list-sync/state.enc
+          if-no-files-found: ignore
+          retention-days: 7

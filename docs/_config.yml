@@ -1,0 +1,33 @@
+title: Reelign
+tagline: Your lists. Perfectly aligned.
+description: >-
+  Sync your own or publicly readable MDBList and Trakt movie and TV lists
+  from your own GitHub repository. Preview, guarded mirroring, encrypted
+  state, and configurable GitHub Actions schedules.
+url: https://jedirhymetrix.github.io
+baseurl: /reelign
+repository: JediRhymeTrix/reelign
+author: JediRhymeTrix
+lang: en
+timezone: UTC
+markdown: kramdown
+highlighter: rouge
+permalink: pretty
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: false
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - .jekyll-cache
+  - .sass-cache
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      image: /assets/social.svg

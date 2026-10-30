@@ -1,0 +1,20 @@
+version = 1
+
+[schedules.default]
+cron = "17 * * * *"
+timezone = "UTC"
+
+# Replace both URLs, choose a policy, then enable your rule. Keep the template
+# disabled until you install your own secrets and initialize encrypted state.
+[[rules]]
+id = "my-first-list"
+enabled = false
+source = "https://mdblist.com/lists/your-user/your-list"
+destination = "https://trakt.tv/users/your-user/lists/your-list"
+direction = "source_to_destination"
+deletion_policy = "additions_only"
+order_authority = "source"
+profile = "default"
+allow_empty = false
+max_delete_fraction = 0.5
+max_delete_count = 100

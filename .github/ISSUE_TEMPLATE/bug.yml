@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible, sanitized sync or setup problem
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never paste tokens, secret exports, decrypted state or private list URLs. Report security issues privately.
+  - type: input
+    id: version
+    attributes:
+      label: Reelign version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [Setup, Configuration, Scheduling, MDBList reads/writes, Trakt reads/writes, State/recovery, Documentation]
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction with synthetic list URLs and no secrets
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

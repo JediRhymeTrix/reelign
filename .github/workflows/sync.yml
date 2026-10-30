@@ -1,0 +1,35 @@
+name: Preview or sync lists
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only (no list, OAuth or baseline writes)
+        type: boolean
+        default: true
+      profile:
+        description: Schedule profile (blank selects all enabled rules)
+        type: string
+        default: ''
+      rule:
+        description: Rule ID (blank selects all matching enabled rules)
+        type: string
+        default: ''
+      bootstrap:
+        description: Explicit initial bidirectional union (never resets existing state)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/reusable-sync.yml
+    with:
+      profile: ${{ inputs.profile }}
+      rule: ${{ inputs.rule }}
+      dry_run: ${{ inputs.dry_run }}
+      bootstrap: ${{ inputs.bootstrap }}
+    secrets: inherit

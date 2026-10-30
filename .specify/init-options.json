@@ -1,0 +1,8 @@
+{
+  "ai": "cline",
+  "branch_numbering": "sequential",
+  "here": false,
+  "integration": "cline",
+  "script": "ps",
+  "speckit_version": "0.9.5"
+}
