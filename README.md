@@ -1,4 +1,4 @@
-# Reelign — MDBList ↔ Trakt List Sync
+# <img src="docs/assets/favicon.svg" alt="Reelign logo" width="40" height="40"> Reelign — MDBList ↔ Trakt List Sync
 
 **Your lists. Perfectly aligned.**
 
