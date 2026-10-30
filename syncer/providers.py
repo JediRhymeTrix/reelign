@@ -332,6 +332,8 @@ class Trakt(_Provider):
         current = self._metadata()
         if (current.get("description") or "") != snapshot.description:
             raise SyncError("Destination description changed concurrently; refusing overwrite")
+        if current.get("privacy") != snapshot.metadata.get("privacy"):
+            raise SyncError("Destination visibility changed concurrently; refusing source disclosure")
         self.http.request("PUT", self.path, body={"description": description})
         current = self._metadata()
         if current.get("description") != description:

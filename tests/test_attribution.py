@@ -151,6 +151,15 @@ class MetadataProviderTests(unittest.TestCase):
             provider.ensure_description(snapshot, "New")
         self.assertEqual(provider.http.calls, [])
 
+    def test_visibility_change_before_description_write_fails_closed(self):
+        before = dict(trakt_meta(), privacy="private")
+        changed = dict(before, privacy="public")
+        snapshot = Snapshot(TRAKT_URL, "Films", before["description"], [], metadata=before)
+        provider = Trakt(TRAKT_URL, FakeHttp(changed), "owner")
+        with self.assertRaises(SyncError):
+            provider.ensure_description(snapshot, "New private source credit")
+        self.assertFalse(any(call[0] == "PUT" for call in provider.http.calls))
+
 
 if __name__ == "__main__":
     unittest.main()
