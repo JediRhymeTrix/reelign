@@ -32,6 +32,39 @@ Reelign writes **custom/rank order**, then rereads that order to verify it. It d
 
 ## One-way rules
 
+### Source credit and destination descriptions
+
+By default, supported destinations retain their existing description and receive
+one compact credit block linking the **original list**, **its creator**, and
+[Reelign](https://jedirhymetrix.github.io/reelign/) so readers can set up their own
+sync. Trakt receives escaped Markdown links, not raw HTML or BBCode:
+
+```markdown
+Synced from [Original list](https://mdblist.com/lists/curator/films) by [Creator (@curator)](https://mdblist.com/@curator).
+
+Powered by [Reelign](https://jedirhymetrix.github.io/reelign/). Your lists. Perfectly aligned. Set up automatic MDBList ↔ Trakt syncing for your own lists or public favorites.
+```
+
+Reelign replaces only its own complete generated block, preserves surrounding
+owner prose, checks for concurrent description edits, and verifies a
+description-only update. Unchanged descriptions are not written. Dry runs report
+`would_update` without mutation; apply reports `updated` or `unchanged`.
+
+Set `attribution = false` on a rule to leave descriptions unmanaged. A private or
+unknown-visibility source is never automatically linked from a public Trakt
+destination: the rule stops before list changes so you can choose a private target
+or explicitly disable attribution. Descriptions are never silently truncated.
+
+**MDBList API limitation:** current documented metadata updates accept only name
+and privacy, not description. MDBList destinations report
+`unsupported_destination_api` without speculative writes; reverse/bidirectional
+item sync still works. You can copy the credit manually into MDBList. A two-way
+rule credits the opposite list on each writable, supported destination and does
+not copy the opposite list's description recursively.
+
+The explicit `create-destination` helper includes credit in new private Trakt
+lists as well. Name, privacy and list items are not changed by description updates.
+
 For `source_to_destination`, source is the authority and destination is written. For `destination_to_source`, those roles reverse. The configured labels do not change based on provider.
 
 - **`mirror`:** target membership and order become the authority’s snapshot. Target-only entries are removed subject to safeguards.

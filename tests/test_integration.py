@@ -38,6 +38,7 @@ deletion_policy = "mirror"
             source_items = [Item("movie", {"tmdb": 2}), Item("movie", {"tmdb": 1})]
 
             class Provider:
+                supports_description = False
                 def __init__(self, items):
                     self.items = list(items)
                     self.writes = []

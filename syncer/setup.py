@@ -412,6 +412,17 @@ def _create_destination(args):
         raise SyncError("Destination list enumeration incomplete; refusing to create")
     if any(row["name"].strip().casefold() == title.casefold() for row in lists):
         raise SyncError("A Trakt list with that name already exists; refusing adoption. Choose --title explicitly")
+    from .attribution import compose_description
+    from .model import Snapshot
+    creator = owner
+    if provider == "trakt":
+        source_user = source.get("user") or {}
+        if not isinstance(source_user, dict):
+            raise SyncError("Source creator metadata is invalid")
+        creator = source_user.get("name") or owner
+    description = compose_description(description, Snapshot(
+        args.source, source.get("name") or title, source.get("description") or "", [],
+        provider=provider, metadata=source), creator)
     created, _ = trakt.request("POST", f"/users/{user}/lists", body={"name": title, "description": description,
                                 "privacy": "private", "display_numbers": False, "allow_comments": False,
                                 "sort_by": "rank", "sort_how": "asc"})

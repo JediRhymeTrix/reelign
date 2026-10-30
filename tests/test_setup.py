@@ -383,7 +383,11 @@ enabled = false
         self.assertEqual(call.args, ("POST", "/users/my-account/lists"))
         self.assertEqual(call.kwargs["body"]["privacy"], "private")
         self.assertEqual(call.kwargs["body"]["name"], "Source title")
-        self.assertEqual(call.kwargs["body"]["description"], "Source description")
+        description = call.kwargs["body"]["description"]
+        self.assertTrue(description.startswith("Source description\n\n"))
+        self.assertIn("[Source title](https://mdblist.com/lists/curator/films)", description)
+        self.assertIn("[@curator](https://mdblist.com/@curator)", description)
+        self.assertIn("Powered by [Reelign]", description)
         self.assertNotIn("fixture-", out + err)
 
     def test_destination_name_collision_refuses_adoption_or_mutation(self):

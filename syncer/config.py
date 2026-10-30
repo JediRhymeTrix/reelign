@@ -148,6 +148,7 @@ class Rule:
     max_delete_count: int = 100
     enabled: bool = True
     profile: str = "default"
+    attribution: bool = True
 
     def __post_init__(self):
         if not isinstance(self.id, str) or not self.id.strip():
@@ -164,7 +165,7 @@ class Rule:
             value = getattr(self, name)
             if not isinstance(value, str) or value not in allowed:
                 raise SyncError(f"Invalid {name}; expected one of {', '.join(sorted(allowed))}")
-        for name in ("allow_empty", "enabled"):
+        for name in ("allow_empty", "enabled", "attribution"):
             if type(getattr(self, name)) is not bool:
                 raise SyncError(f"{name} must be a boolean")
         fraction = self.max_delete_fraction
@@ -202,6 +203,7 @@ class Rule:
     def _legacy_values(self) -> dict:
         values = asdict(self)
         del values["profile"]
+        del values["attribution"]
         # TOML integers 0/1 are valid fractions with identical numeric semantics.
         values["max_delete_fraction"] = float(self.max_delete_fraction)
         return values

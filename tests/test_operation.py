@@ -41,8 +41,14 @@ class OperationTests(unittest.TestCase):
     def call(self, extra=(), rules=None, source_error=None):
         def adapter(url, *args):
             p = Mock()
-            p.snapshot.return_value = Snapshot(url, "Film", "", [Item("movie", {"tmdb": 1})])
+            p.snapshot.return_value = Snapshot(url, "Film", "", [Item("movie", {"tmdb": 1})],
+                provider="mdblist" if "mdblist.com" in url else "trakt",
+                metadata={"private": False, "privacy": "private"})
             p.ensure_rank_sort.return_value = False
+            p.supports_description = "trakt.tv" in url
+            p.description_format = "markdown" if p.supports_description else "plain"
+            p.creator.return_value = "Curator"
+            p.ensure_description.return_value = False
             if source_error and url.endswith("/one") and "mdblist" in url:
                 p.snapshot.side_effect = source_error
             return p
@@ -100,6 +106,23 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(self.call(["--dry-run"]), 0)
         self.assertEqual(self.state["rules"], {})
         self.store.save.assert_not_called()
+
+    def test_attribution_in_dry_run_is_planned_not_written(self):
+        self.assertEqual(self.call(["--dry-run", "--rule", "one"]), 0)
+        report = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertEqual(report["attribution"][0]["status"], "would_update")
+
+    def test_attribution_opt_out_leaves_destination_description_unmanaged(self):
+        from dataclasses import replace
+        self.assertEqual(self.call(rules=[replace(self.rules[0], attribution=False)]), 0)
+        report = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertEqual(report["attribution"], [])
+
+    def test_reverse_destination_api_limitation_reported_without_blocking_items(self):
+        from dataclasses import replace
+        self.assertEqual(self.call(rules=[replace(self.rules[0], direction="destination_to_source")]), 0)
+        report = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertEqual(report["attribution"][0]["status"], "unsupported_destination_api")
 
     def test_dependency_reader_skips_after_failed_upstream_but_independent_runs(self):
         downstream = Rule("downstream", self.rules[0].destination,

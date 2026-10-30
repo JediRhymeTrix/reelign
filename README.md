@@ -22,6 +22,7 @@ Less platform drama. More movies.
 
 - **MDBList to Trakt, Trakt to MDBList, or both ways.** Choose a direction per rule.
 - **Your lists and public curator lists.** Read your own accessible lists or someone else’s public list; write only to lists your authenticated accounts can modify.
+- **Credit where it belongs.** Synced Trakt descriptions link the original list and creator, plus a compact Reelign setup link, without replacing your own description. [Formatting and platform limits](docs/behavior.md#source-credit-and-destination-descriptions).
 - **Mirror or additions-only.** Propagate removals deliberately, or keep items already collected at the destination.
 - **Ordered movie/show synchronization.** Match IMDb, TMDB, Trakt, and TVDB identifiers without title guessing; verify membership and custom rank after writes.
 - **Multiple rules and schedule profiles.** Generate native GitHub Actions schedules with cron and IANA timezones, or run manually.

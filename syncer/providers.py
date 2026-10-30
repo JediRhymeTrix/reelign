@@ -93,6 +93,8 @@ def _same_membership(desired, actual):
 
 
 class _Provider:
+    supports_description = False
+    description_format = "plain"
     provider = ""
 
     def __init__(self, url, http, user=None):
@@ -139,6 +141,11 @@ class _Provider:
         """Provider has no separate default view to update (MDB reorder sets it)."""
         return False
 
+    def creator(self, snapshot):
+        """Stable username is always available; providers can resolve display names."""
+        self._check_snapshot(snapshot)
+        return self.owner
+
     def _check_snapshot(self, snapshot):
         if snapshot.url.rstrip("/") != self.url:
             raise SyncError("Preflight snapshot belongs to a different list")
@@ -152,6 +159,19 @@ class MDBList(_Provider):
         super().__init__(url, http, user)
         self.path = f"/lists/{self.owner}/{self.slug}"
         self.list_id = None
+        self._creator_name = None
+
+    def creator(self, snapshot):
+        self._check_snapshot(snapshot)
+        if self._creator_name is None:
+            value, _ = self.http.request("GET", f"/users/{self.owner}")
+            user = _object(_object(value).get("user"))
+            if not isinstance(user.get("username"), str) or user["username"].casefold() != self.owner:
+                raise SyncError("Source creator profile does not match list owner")
+            self._creator_name = user.get("name") or self.owner
+            if not isinstance(self._creator_name, str):
+                raise SyncError("Source creator display name is invalid")
+        return self._creator_name
 
     def _metadata(self):
         value, _ = self.http.request("GET", self.path)
@@ -289,6 +309,37 @@ class MDBList(_Provider):
 
 class Trakt(_Provider):
     provider = "trakt"
+    supports_description = True
+    description_format = "markdown"
+
+    def creator(self, snapshot):
+        metadata = self._check_snapshot(snapshot)
+        user = _object(metadata.get("user", {}))
+        # Owner identity comes from the validated source URL, never authenticated
+        # destination credentials or arbitrary profile URLs supplied by metadata.
+        names = [user.get("username"), _object(user.get("ids", {})).get("slug")]
+        if user and not any(isinstance(name, str) and name.casefold() == self.owner for name in names):
+            raise SyncError("Source creator metadata does not match list owner")
+        return user.get("name") or self.owner
+
+    def ensure_description(self, snapshot, description):
+        """Description-only, ownership checked and reread verified; no other fields."""
+        self.preflight(snapshot)
+        if not isinstance(description, str) or len(description) > 10000:
+            raise SyncError("Invalid or oversized Trakt description")
+        if snapshot.description == description:
+            return False
+        current = self._metadata()
+        if (current.get("description") or "") != snapshot.description:
+            raise SyncError("Destination description changed concurrently; refusing overwrite")
+        self.http.request("PUT", self.path, body={"description": description})
+        current = self._metadata()
+        if current.get("description") != description:
+            raise SyncError("Destination description verification failed; baseline not advanced")
+        snapshot.description = description
+        snapshot.metadata = current
+        snapshot.version = str(current.get("updated_at") or "")
+        return True
 
     def __init__(self, url, http, user):
         super().__init__(url, http, user)

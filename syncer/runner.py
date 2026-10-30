@@ -154,6 +154,7 @@ def main(argv=None):
         from .http import ApiError, Http
         from .planner import plan
         from .providers import MDBList, Trakt
+        from .attribution import compose_description
         rules = load_config(args.config)
         if args.validate_only:
             print(json.dumps({"valid": True, "rules": len(rules)}))
@@ -214,6 +215,29 @@ def main(argv=None):
                     targets.append((source, left, result.source))
                 if result.writes_destination:
                     targets.append((destination, right, result.destination))
+                credits = []
+                attribution_report = []
+                if rule.attribution:
+                    for adapter, original, origin_adapter, origin in (
+                        (source, left, destination, right),
+                        (destination, right, source, left),
+                    ):
+                        written = result.writes_source if adapter is source else result.writes_destination
+                        if not written:
+                            continue
+                        if not adapter.supports_description:
+                            attribution_report.append({"provider": original.provider,
+                                                       "status": "unsupported_destination_api"})
+                            continue
+                        desired_description = compose_description(
+                            original.description, origin, origin_adapter.creator(origin),
+                            formatting=adapter.description_format,
+                            destination_public=original.metadata.get("privacy") != "private",
+                        )
+                        report = {"provider": original.provider,
+                            "status": "would_update" if desired_description != original.description else "unchanged"}
+                        credits.append((adapter, original, desired_description, report))
+                        attribution_report.append(report)
 
                 def authority_guard():
                     for adapter, original, written in (
@@ -227,8 +251,13 @@ def main(argv=None):
 
                 changes = execute_targets(targets, dry_run=args.dry_run,
                                           authority_guard=authority_guard)
+                if not args.dry_run:
+                    for adapter, original, description, report in credits:
+                        changed = adapter.ensure_description(original, description)
+                        report["status"] = "updated" if changed else "unchanged"
                 entry = {"rule": rule.id, "source_count": len(left.items),
-                         "destination_count": len(right.items), "targets": changes}
+                         "destination_count": len(right.items), "targets": changes,
+                         "attribution": attribution_report}
             except SyncError as exc:
                 if isinstance(exc, ApiError) and exc.status in {401, 403}:
                     raise

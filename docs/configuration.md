@@ -74,8 +74,13 @@ Only these top-level keys are allowed. An omitted `default` table still exists w
 | `max_delete_count` | `100` | Nonnegative integer; maximum removals per endpoint/run |
 | `enabled` | `true` | Boolean. Disabled rules are still validated but are not selected/executed |
 | `profile` | `"default"` | Existing named schedule profile; affects selection/timing, not reconciliation semantics |
+| `attribution` | `true` | Append/update source-list and creator credit plus a compact Reelign link on supported destinations; `false` leaves the description untouched |
 
 The template explicitly sets `enabled = false`; the **parser default is true** if you omit it. Copy examples deliberately.
+
+Attribution is presentation-only: toggling it does not reset bidirectional
+reconciliation history. Turning it off leaves any existing footer in place for
+you to edit or remove; it does not delete owner-authored text.
 
 Deletion limits are inclusive: removing exactly the configured count/fraction is permitted, exceeding either stops the rule. They count actual identity removals, **not net size change**. Replacing 60 of 100 entries is 60 removals even if 60 others are added. Set either limit to zero to forbid removals. `allow_empty=true` alone is insufficient to clear a list: both limits must also permit all removals.
 

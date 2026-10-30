@@ -51,6 +51,17 @@ def document(**changes):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_attribution_opt_out_does_not_reset_baseline_fingerprint(self):
+        current = rule()
+        disabled = rule(attribution=False)
+        self.assertTrue(current.attribution)
+        self.assertEqual(current.fingerprint, disabled.fingerprint)
+        self.assertEqual(current.legacy_fingerprint, disabled.legacy_fingerprint)
+        settings = self.load(document(attribution=False))
+        self.assertFalse(settings.rules[0].attribution)
+        with self.assertRaises(SyncError):
+            rule(attribution="false")
+
     def load(self, text, loader=load_settings):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

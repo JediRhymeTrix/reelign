@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0 — 2026-10-30
+
+- Credit source lists and their creators in supported destination descriptions,
+  with destination-native Markdown and a compact Reelign setup link.
+- Preserve existing prose, replace only the managed footer, and verify
+  description-only writes; dry-run and unchanged runs do not mutate descriptions.
+- Add per-rule `attribution` opt-out without resetting reconciliation history.
+- Guard against exposing private sources in public destination descriptions.
+- Include credit during explicit private Trakt list creation; document MDBList's
+  current lack of a description-update API without blocking reverse item sync.
+
 ## 1.0.0 — 2026-10-30
 
 Initial standalone public template release.
