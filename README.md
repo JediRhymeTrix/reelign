@@ -2,6 +2,12 @@
 
 **Your lists. Perfectly aligned.**
 
+[![Tests](https://github.com/JediRhymeTrix/reelign/actions/workflows/ci.yml/badge.svg)](https://github.com/JediRhymeTrix/reelign/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-65e5c5)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/JediRhymeTrix/reelign)](https://github.com/JediRhymeTrix/reelign/releases)
+
+**[Use this template →](https://github.com/JediRhymeTrix/reelign/generate)** · Create a private copy, add your own secrets, preview, then enable.
+
 Sync movie and TV show lists between MDBList and Trakt, from your own GitHub repository. Keep your own lists aligned, or follow another curator’s publicly readable list into a destination you control. Both are first-class use cases.
 
 [Get started](docs/setup.md) · [Documentation](https://jedirhymetrix.github.io/reelign/) · [Configuration](docs/configuration.md) · [Recovery](docs/recovery.md) · [MIT license](LICENSE)

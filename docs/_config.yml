@@ -30,4 +30,4 @@ defaults:
       path: ""
     values:
       layout: default
-      image: /assets/social.svg
+      image: /assets/social.png
