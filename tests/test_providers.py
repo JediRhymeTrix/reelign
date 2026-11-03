@@ -213,8 +213,8 @@ class MDBTests(unittest.TestCase):
     def test_live_updated_field_is_checked_and_exposed_as_version(self):
         before = mdb_meta(); before.pop("updated_at"); before["updated"] = "2026-01-01T00:00:00Z"
         after = dict(before, updated="2026-01-02T00:00:00Z")
-        with self.assertRaises(SyncError):
-            MDBList(MDB_URL, FakeHttp(before, mdb_page([mdb_item(1), mdb_item(2)]), after)).snapshot()
+        with patch("time.sleep"), self.assertRaises(SyncError):
+            MDBList(MDB_URL, FakeHttp(*([before, mdb_page([mdb_item(1), mdb_item(2)]), after] * 3))).snapshot()
         snapshot = MDBList(MDB_URL, FakeHttp(before, mdb_page([mdb_item(1), mdb_item(2)]), before)).snapshot()
         self.assertEqual(snapshot.version, before["updated"])
 
@@ -244,9 +244,10 @@ class MDBTests(unittest.TestCase):
             [mdb_meta(1), mdb_page([mdb_item(1, "episode")]), mdb_meta(1)],
             [mdb_meta(), {"movies": [], "pagination": {"total": 2, "has_more": True}}],
         ]
-        for responses in scenarios:
-            with self.subTest(responses=responses), self.assertRaises(SyncError):
-                MDBList(MDB_URL, FakeHttp(*responses)).snapshot()
+        for index, responses in enumerate(scenarios):
+            attempts = responses * 3 if index == 1 else responses
+            with self.subTest(responses=responses), patch("time.sleep"), self.assertRaises(SyncError):
+                MDBList(MDB_URL, FakeHttp(*attempts)).snapshot()
 
     def test_preflight_authenticates_account_and_requires_static_owned(self):
         # Factory's user can be a Trakt account; MDB ownership uses authenticated /user.
@@ -358,9 +359,10 @@ class TraktTests(unittest.TestCase):
             [trakt_meta(), ([trakt_item(1, 1)], {})],
             [trakt_meta(), trakt_page([trakt_item(1, 1)], 1, 2, 2), trakt_page([trakt_item(2, 2)], 2, 2, 3)],
         ]
-        for responses in scenarios:
-            with self.subTest(responses=responses), self.assertRaises(SyncError):
-                Trakt(TRAKT_URL, FakeHttp(*responses), "owner").snapshot()
+        for index, responses in enumerate(scenarios):
+            attempts = responses * 3 if index in {1, 6} else responses
+            with self.subTest(responses=responses), patch("time.sleep"), self.assertRaises(SyncError):
+                Trakt(TRAKT_URL, FakeHttp(*attempts), "owner").snapshot()
 
     def test_preflight_rejects_nonowner(self):
         snap = Snapshot(TRAKT_URL, "", "", [], metadata=trakt_meta(0))

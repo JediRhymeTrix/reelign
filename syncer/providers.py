@@ -6,10 +6,16 @@ preflight destinations and reread after writes (the runner owns convergence).
 """
 
 from datetime import datetime, timezone
+import sys
+import time
 
 from .config import parse_url
 from .http import ApiError
 from .model import Item, Snapshot, SyncError, identify
+
+
+class _SnapshotChanged(SyncError):
+    """A well-formed list changed while being read; discard and restart its read."""
 
 
 def _object(value):
@@ -104,6 +110,24 @@ class _Provider:
         self.url = url.rstrip("/")
         self.http = http
         self.user = user
+
+    def snapshot(self, order="added"):
+        """At most three complete reads; never replay mutations or API failures.
+
+        Each _snapshot_once call owns fresh metadata, pages, items and cursors.
+        Retry only explicitly classified list changes, leaving malformed responses
+        and exhausted transport/rate-limit errors terminal. No partial read escapes.
+        """
+        _order(order)
+        for attempt in range(3):
+            try:
+                return self._snapshot_once(order)
+            except _SnapshotChanged:
+                if attempt == 2:
+                    raise
+                print(f"WARNING: {self.provider} list changed during read; "
+                      f"restarting full snapshot ({attempt + 2}/3)", file=sys.stderr)
+                time.sleep(attempt + 1)
 
     def _snapshot(self, metadata, items, count):
         if len(items) != count:
@@ -209,7 +233,7 @@ class MDBList(_Provider):
             ids["tmdb"] = row["id"]
         return Item(kind, ids, row.get("added_at"), _integer(row.get("rank", 0)))
 
-    def snapshot(self, order="added"):
+    def _snapshot_once(self, order):
         _order(order)
         before = self._metadata()
         count = _integer(before["items"])
@@ -252,20 +276,33 @@ class MDBList(_Provider):
                         rows.extend(self._item(row, kind) for row in bucket_items)
                     if nonempty > 1:
                         raise SyncError("Mixed media requires unified MDBList ordering")
-            if total != count or len(items) + len(rows) > count:
-                raise SyncError("MDBList pagination count changed during snapshot")
-            items.extend(rows)
             if not more:
                 if next_cursor:
                     raise SyncError("MDBList pagination end is inconsistent")
-                break
-            if not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
+            elif not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
                 raise SyncError("MDBList pagination cursor is missing or repeated")
+            for item in rows:
+                item.aliases()
+            if len(rows) > total:
+                raise SyncError("MDBList page contains more items than its declared total")
+            if total != count:
+                # Drift cannot turn invalid observed identities/cursors into a
+                # retryable read. Validate collected data before abandoning it.
+                identify(items + rows)
+                raise _SnapshotChanged("MDBList pagination count changed during snapshot")
+            if len(items) + len(rows) > count:
+                raise SyncError("MDBList pagination contains excess items")
+            items.extend(rows)
+            if not more:
+                break
             seen.add(next_cursor)
             cursor = next_cursor
+        if len(items) != count:
+            raise SyncError("List snapshot count mismatch; refusing incomplete snapshot")
+        identify(items)
         after = self._metadata()
         if self._stable(before) != self._stable(after):
-            raise SyncError("List metadata changed during snapshot; retry next run")
+            raise _SnapshotChanged("List metadata changed during snapshot; retry next run")
         # MDBList's natural order=asc for added is NEWEST first, matching its
         # visible Date Added view. Preserve server ties/cursors even with null dates.
         return self._snapshot(before, items, count)
@@ -368,11 +405,12 @@ class Trakt(_Provider):
         return Item(kind, dict(ids), row.get("listed_at"), _integer(row.get("rank")),
                     _integer(row.get("id"), 1))
 
-    def snapshot(self, order="added"):
+    def _snapshot_once(self, order):
         _order(order)
         before = self._metadata()
         count = _integer(before["item_count"])
         items, page, page_count = [], 1, None
+        ranks, entries = set(), set()
         while True:
             value, headers = self.http.request("GET", self.path + "/items",
                                                params={"page": page, "limit": 100})
@@ -382,12 +420,29 @@ class Trakt(_Provider):
             returned_page = _integer(headers.get("x-pagination-page"), 1)
             pages = _integer(headers.get("x-pagination-page-count"))
             total = _integer(headers.get("x-pagination-item-count"))
-            if returned_page != page or total != count or (page_count is not None and pages != page_count):
-                raise SyncError("Trakt pagination changed during snapshot")
+            if returned_page != page:
+                raise SyncError("Trakt returned an unexpected page number")
+            if (total and pages == 0) or (not total and pages > 1) or pages > max(1, total):
+                raise SyncError("Trakt returned inconsistent pagination")
+            rows = [self._item(row) for row in value]
+            if len(rows) > total:
+                raise SyncError("Trakt page contains more items than its declared total")
+            if not rows and page < pages:
+                raise SyncError("Trakt pagination ended before the final page")
+            for item in rows:
+                item.aliases()
+                if item.rank in ranks or item.entry_id in entries:
+                    raise SyncError("Trakt returned duplicate ranks or list-entry IDs")
+                ranks.add(item.rank)
+                entries.add(item.entry_id)
+            if total != count or (page_count is not None and pages != page_count):
+                identify(items + rows)
+                if order == "added":
+                    _newest_first(items + rows)
+                raise _SnapshotChanged("Trakt pagination changed during snapshot")
             page_count = pages
             if (count and pages == 0) or (not count and pages > 1) or pages > max(1, count):
                 raise SyncError("Trakt returned inconsistent pagination")
-            rows = [self._item(row) for row in value]
             items.extend(rows)
             if len(items) > count:
                 raise SyncError("Trakt pagination contains excess items")
@@ -396,12 +451,13 @@ class Trakt(_Provider):
             if not rows:
                 raise SyncError("Trakt pagination ended before the final page")
             page += 1
+        if len(items) != count:
+            raise SyncError("List snapshot count mismatch; refusing incomplete snapshot")
+        identify(items)
+        items = sorted(items, key=lambda item: item.rank) if order == "rank" else _newest_first(items)
         after = self._metadata()
         if self._stable(before) != self._stable(after):
-            raise SyncError("List metadata changed during snapshot; retry next run")
-        if len({item.rank for item in items}) != len(items) or len({item.entry_id for item in items}) != len(items):
-            raise SyncError("Trakt returned duplicate ranks or list-entry IDs")
-        items = sorted(items, key=lambda item: item.rank) if order == "rank" else _newest_first(items)
+            raise _SnapshotChanged("List metadata changed during snapshot; retry next run")
         return self._snapshot(before, items, count)
 
     def preflight(self, snapshot):

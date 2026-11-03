@@ -16,6 +16,28 @@ Identity is resolved using shared **IMDb, TMDB, Trakt, and TVDB IDs**, qualified
 
 Snapshots must be complete. Counts, pagination/cursors, and relevant metadata are checked; a moving, truncated, or inconsistent response is not treated as an empty source. All enabled rules still need a source and destination accessible through the provider APIs.
 
+### Bounded recovery when a list changes during a read
+
+If otherwise valid responses show a changed total/page count or metadata, Reelign
+discards that entire snapshot and starts again from fresh metadata and page one
+(or a fresh MDBList cursor). It makes **at most three total attempts**, waiting
+**1 second, then 2 seconds** between attempts. Normal reads add no requests or delay.
+
+Observed malformed data is validated **before** deciding to retry: wrong pages,
+invalid IDs, duplicate identities/ranks, unsupported media, invalid cursors,
+internally impossible page counts and incomplete final snapshots remain errors,
+even when count/metadata drift is also present. No partial snapshot is returned.
+If all read attempts change, the rule fails closed without advancing its baseline.
+
+This is a read-only retry boundary, **not** an entire-sync retry. It does not
+replay additions/removals/reorders, OAuth refresh, or exhausted transport/auth/quota
+failures. Existing per-request HTTP retries and all convergence/deletion checks
+remain in force. A failure after earlier writes can still require a new preview;
+read recovery does not make cross-service operations transactional.
+
+Warnings identify only provider and attempt. These retries address transient
+snapshot failures, not delayed/missing GitHub cron triggers; scheduling is unchanged.
+
 ## Read-only and writable endpoints
 
 Your own source and another curator’s publicly readable source are equally supported. Read-only endpoints need API read access, not ownership. Writable Trakt lists must belong to the authenticated account. Writable MDBList lists must belong to the API-key account and be explicitly **static**, not dynamic/generated. Bidirectional rules require both sides writable.

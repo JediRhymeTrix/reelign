@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-11-03
+
+- Restart unstable complete list reads up to three total attempts with 1s/2s
+  backoff, discarding all old pages/cursors and rereading metadata from the start.
+- Preserve fail-closed validation: malformed content, unsupported media, invalid
+  identities/ranks/cursors and impossible/incomplete pages are terminal even if
+  the response simultaneously reports changed counts or metadata.
+- Independent adversarial review and 20 new retry regression tests; no mutation,
+  OAuth, schedule, alert, configuration or state-format changes.
+
 ## 1.1.0 — 2026-10-30
 
 - Credit source lists and their creators in supported destination descriptions,
