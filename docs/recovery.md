@@ -23,6 +23,27 @@ Keep the original key in encrypted storage. Preserve the current `cron-state` co
 
 An older state copy may contain a consumed refresh token. A key without usable state is not a current token backup; ciphertext without its key is not recoverable through Reelign. If the key is irretrievably lost, ordinary recovery cannot preserve/decrypt those baselines. Treat any new installation as a separately reviewed migration, export/inspect actual lists first, and reconsider bidirectional deletions; there is no automatic safe reset.
 
+## Pending operation journals (1.2)
+
+`pending_verification` means an acknowledged effect is awaiting a complete,
+consistent read—not convergence. The next existing schedule resumes verification
+before permitting more mutations. No baseline advances while pending. Healthy
+pending execution may exit zero; inspect the explicit JSON/job-summary status.
+
+`blocked`/nonzero means an unknown outcome, partial/malformed acknowledgement,
+changed rule/list identity, regressed evidence or pending work older than24hours
+needs review. An absent effect cannot prove an ambiguous request never executed.
+Never delete journals, restore old baselines or repeat writes merely to clear it.
+
+Pause concurrent writers and preserve the newest encrypted state/artifact. Inspect
+actual membership, list-entry IDs, ranks and attribution using read-only calls.
+Obtain provider clarification or a reviewed state-resolution/migration appropriate
+to the specific operation. There is intentionally no blind “clear and retry” CLI.
+
+First journal persistence upgrades payload schema1 to2, using the same encryption
+key and OAuth. Older Reelign binaries refuse2; do not downgrade until all pending
+work is resolved and a separately reviewed compatible-state migration exists.
+
 ## State push failed after OAuth refresh
 
 Refresh tokens are single-use. A successful refresh followed by a failed Git push may leave the **only current pair** in the runner’s local encrypted state file. The provided worker attempts to upload that file as `encrypted-recovery-RUN_ID` on failure, retained for seven days. Artifact upload itself is not guaranteed, so act promptly and inspect the run.

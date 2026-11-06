@@ -32,7 +32,7 @@ class SnapshotRetryTests(unittest.TestCase):
                         new, trakt_page([trakt_item(3, 1)], total=1), new)
         snapshot, sleep, output = self.read(Trakt(TRAKT_URL, http, "owner"))
         self.assertEqual([item.ids["trakt"] for item in snapshot.items], [3])
-        self.assertEqual([call[2]["page"] for call in http.calls if call[1].endswith("/items")], [1, 2, 1])
+        self.assertEqual([call[2]["page"] for call in http.calls if "/items" in call[1]], [1, 2, 1])
         sleep.assert_called_once_with(1)
         self.assertIn("trakt", output.lower())
         self.assertNotIn(TRAKT_URL, output)
@@ -158,7 +158,7 @@ class SnapshotRetryTests(unittest.TestCase):
 
     def test_failure_after_restart_is_not_hidden_or_followed_by_more_attempts(self):
         failure = ApiError("Authentication lost", 401)
-        http = FakeHttp(trakt_meta(1), trakt_page([trakt_item(1, 1)], total=2), failure)
+        http = FakeHttp(trakt_meta(1), trakt_page([trakt_item(1, 1), trakt_item(2, 2)], total=2), failure)
         with patch("time.sleep") as sleep, redirect_stderr(StringIO()), self.assertRaises(ApiError) as caught:
             Trakt(TRAKT_URL, http, "owner").snapshot()
         self.assertIs(caught.exception, failure)

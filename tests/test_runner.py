@@ -49,9 +49,8 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(SyncError):
             StateStore(self.path, "bad-key")
         store = StateStore(self.path, self.key)
-        store.save({"version": 9, "rules": {}})
         with self.assertRaises(SyncError):
-            store.load()
+            store.save({"version": 9, "rules": {}})
 
     def test_unchanged_state_does_not_write(self):
         store = StateStore(self.path, self.key)
@@ -101,7 +100,7 @@ class ExecutionTests(unittest.TestCase):
         a = Item("movie", {"tmdb": 1})
         p = self.provider([a])
         execute_targets([(p, p.snapshot(), [a])], dry_run=False)
-        self.assertEqual(p.calls, ["preflight"])
+        self.assertEqual(p.calls, ["preflight", "preflight", "preflight"])
 
     def test_default_rank_sort_is_applied_even_with_unchanged_membership(self):
         from syncer.runner import execute_targets
@@ -164,7 +163,7 @@ class ExecutionTests(unittest.TestCase):
         a, b = Item("movie", {"tmdb": 1}), Item("movie", {"tmdb": 2})
         p = self.provider([b, a])
         execute_targets([(p, p.snapshot(), [a, b])])
-        self.assertEqual(p.calls, ["preflight", "reorder"])
+        self.assertEqual(p.calls, ["preflight", "preflight", "reorder", "preflight", "preflight"])
         self.assertEqual(p.items, [a, b])
 
     def test_concurrent_noop_endpoint_change_prevents_checkpoint(self):
