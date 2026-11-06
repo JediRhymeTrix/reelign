@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 — Unreleased (staged-recovery release candidate)
+## 1.2.0 — 2026-11-06
 
 - Use the documented typed/sorted Trakt list route instead of bare `/items`.
   This is protocol alignment, **not a verified fix** for server page consistency.

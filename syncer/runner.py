@@ -352,6 +352,8 @@ def main(argv=None):
             summary.append(entry)
         if path := os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(path, "a", encoding="utf-8") as stream:
+                if any(entry.get("status") == "pending_verification" for entry in summary):
+                    stream.write("## Pending verification — not converged\nAcknowledged effects will be verified on a later scheduled run.\n\n")
                 stream.write("## List sync\n```json\n" + json.dumps(summary, indent=2) + "\n```\n")
         return 1 if had_error else 0
     except (SyncError, ValueError, KeyError, TypeError, OSError) as exc:

@@ -233,7 +233,11 @@ Independent rule failures are reported and later independent rules can continue.
 
 ## OAuth and durable state
 
-The encrypted version-1 state contains the active OAuth token pair and rule baselines (`fingerprint`, source identities, destination identities). The file has an authenticated format marker, random nonce, and AES-256-GCM ciphertext. Current code also reads compatible legacy state/fingerprints. It never silently discards missing, corrupt, or wrong-key state.
+Encrypted state contains the active OAuth token pair and confirmed rule baselines
+(`fingerprint`, source identities, destination identities). Payload schema2 adds
+pending operation journals; schema1 and compatible legacy state/fingerprints remain
+readable. The file has an authenticated format marker, random nonce and AES-256-GCM
+ciphertext. Missing, corrupt or wrong-key state is never silently discarded.
 
 Before consuming a single-use refresh token, normal execution preflights persistence. A new token pair is saved **before list work**, so unrelated list errors cannot discard successful rotation. A failed state push after rotation is still a recovery incident: the local encrypted file/artifact may be the only copy containing the new token. Dry runs never rotate or advance baselines.
 
