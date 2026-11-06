@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-from .model import SyncError, identify
+from .model import SyncError, StateError, identify
 from .state import StateStore
 
 
@@ -21,13 +21,24 @@ def delta(actual, desired):
             old == new)
 
 
-def execute_targets(targets, dry_run=False, authority_guard=None):
+def execute_targets(targets, dry_run=False, authority_guard=None, observation_guard=None):
     """Verify every addition before ANY deletion, including across both endpoints."""
     prepared = []
     summaries = []
+
+    def checked_read(provider, original):
+        actual = provider.snapshot(order="rank")
+        for key in ("id", "ids"):
+            if original.metadata.get(key) != actual.metadata.get(key):
+                raise SyncError("Destination identity changed while planning; refusing writes")
+        provider.preflight(actual)
+        if observation_guard:
+            observation_guard(provider, actual)
+        return actual
+
     for provider, snapshot, desired in targets:
         provider.preflight(snapshot)
-        actual = provider.snapshot(order="rank")
+        actual = checked_read(provider, snapshot)
         if delta(snapshot.items, actual.items)[0:2] != ([], []):
             raise SyncError("Destination changed while planning; retry next run")
         additions, removals, ordered = delta(actual.items, desired)
@@ -36,14 +47,26 @@ def execute_targets(targets, dry_run=False, authority_guard=None):
                           "reorder": not ordered, "dry_run": dry_run})
     if dry_run:
         return summaries
+    # Default-sort changes are writes too. Check read-only authorities before
+    # each write phase, not only after additions have already been applied.
+    if authority_guard:
+        authority_guard()
+    wrote = False
     for (provider, snapshot, _, _, _), summary in zip(prepared, summaries):
         summary["default_sort_changed"] = provider.ensure_rank_sort(snapshot)
+        wrote = wrote or bool(summary["default_sort_changed"])
+    if authority_guard and any(additions for _, _, _, additions, _ in prepared):
+        authority_guard()
     for provider, _, _, additions, _ in prepared:
         if additions:
             provider.add(additions)
+            wrote = True
     verified = []
     for provider, initial, desired, additions, removals in prepared:
-        current = provider.snapshot(order="rank")
+        # Any endpoint's write can race with edits to another endpoint. Verify
+        # ALL targets after additions/sort writes before allowing ANY deletion.
+        # With no writes, only deletion targets need this immediate fresh guard.
+        current = checked_read(provider, initial) if wrote or removals else initial
         missing, _, _ = delta(current.items, desired)
         if missing:
             raise SyncError("Addition verification failed; no removals performed")
@@ -53,25 +76,45 @@ def execute_targets(targets, dry_run=False, authority_guard=None):
         if unexpected or missing_expected:
             raise SyncError("Destination changed during additions; no removals performed")
         verified.append((provider, current, desired, removals))
-    if authority_guard:
+    removed = any(removals for _, _, _, removals in verified)
+    if authority_guard and removed:
         authority_guard()
     for provider, _, _, removals in verified:
         if removals:
             provider.remove(removals)
+    memberships = []
     for provider, current, desired, removals in verified:
-        current = provider.snapshot(order="rank")
+        if removals:
+            current = checked_read(provider, current)
         additions, extras, ordered = delta(current.items, desired)
         if additions or extras:
             raise SyncError("Membership verification failed; baseline not advanced")
+        memberships.append((provider, current, desired, removals, ordered))
+    if removed and any(not ordered for _, _, _, _, ordered in memberships):
+        # A removal on one endpoint may remove items from an otherwise unchanged
+        # endpoint. A stale reorder could restore/mask that edit. Refresh those
+        # endpoints and validate the whole phase before sending any rank write.
+        refreshed = []
+        for provider, current, desired, removals, ordered in memberships:
+            if not removals:
+                current = checked_read(provider, current)
+                additions, extras, ordered = delta(current.items, desired)
+                if additions or extras:
+                    raise SyncError("Membership verification failed; baseline not advanced")
+            refreshed.append((provider, current, desired, removals, ordered))
+        memberships = refreshed
+    if authority_guard and any(not ordered for _, _, _, _, ordered in memberships):
+        authority_guard()
+    for provider, current, desired, _, ordered in memberships:
         if not ordered:
             provider.reorder(desired, current)
-            final = provider.snapshot(order="rank")
+            final = checked_read(provider, current)
             if not delta(final.items, desired)[2]:
                 raise SyncError("Rank verification failed; baseline not advanced")
     # Re-read every endpoint after all writes, including endpoints that were no-op.
     # No API offers cross-service transactions; minimize, detect and fail on races.
-    for provider, _, desired, _ in verified:
-        if not delta(provider.snapshot(order="rank").items, desired)[2]:
+    for provider, current, desired, _ in verified:
+        if not delta(checked_read(provider, current).items, desired)[2]:
             raise SyncError("List changed before checkpoint; baseline not advanced")
     if authority_guard:
         authority_guard()
@@ -155,6 +198,7 @@ def main(argv=None):
         from .planner import plan
         from .providers import MDBList, Trakt
         from .attribution import compose_description
+        from .staged import Session, resume, Deferred, Blocked
         rules = load_config(args.config)
         if args.validate_only:
             print(json.dumps({"valid": True, "rules": len(rules)}))
@@ -205,11 +249,18 @@ def main(argv=None):
         for rule in rules:
             try:
                 endpoints = {parse_url(rule.source), parse_url(rule.destination)}
+                for pending_id, journal in state.get("journals", {}).items():
+                    if pending_id != rule.id and endpoints & {parse_url(url) for url in journal["urls"]}:
+                        raise Blocked("Endpoint reserved by pending reconciliation; verify writer first")
                 if endpoints & failed_writers:
                     raise SyncError("Dependent rule skipped after upstream failure")
                 source, destination = provider(rule.source), provider(rule.destination)
-                left, right = source.snapshot(), destination.snapshot()
-                result = plan(rule, left, right, state["rules"].get(rule.id), bootstrap=args.bootstrap_state)
+                pending = state.get("journals", {}).get(rule.id)
+                if pending:
+                    left, right, result = resume(rule, [source, destination], pending)
+                else:
+                    left, right = source.snapshot(), destination.snapshot()
+                    result = plan(rule, left, right, state["rules"].get(rule.id), bootstrap=args.bootstrap_state)
                 targets = []
                 if result.writes_source:
                     targets.append((source, left, result.source))
@@ -249,15 +300,41 @@ def main(argv=None):
                             if not delta(current.items, original.items)[2] or current.version != original.version:
                                 raise SyncError("Read-only authority changed; retry without advancing baseline")
 
-                changes = execute_targets(targets, dry_run=args.dry_run,
-                                          authority_guard=authority_guard)
-                if not args.dry_run:
-                    for adapter, original, description, report in credits:
-                        changed = adapter.ensure_description(original, description)
-                        report["status"] = "updated" if changed else "unchanged"
+                session = Session(rule, [source, destination], [left, right], result, state, store)
+                if args.dry_run:
+                    changes = execute_targets(targets, dry_run=True, authority_guard=authority_guard)
+                else:
+                    with session:
+                        changes = execute_targets(targets, authority_guard=authority_guard,
+                            observation_guard=session.observe)
+                        for adapter, original, description, report in credits:
+                            changed = adapter.ensure_description(original, description)
+                            report["status"] = "updated" if changed else "unchanged"
+                        if any(report["status"] == "updated" for _, _, _, report in credits):
+                            for adapter, original, desired in targets:
+                                current = adapter.snapshot(order="rank")
+                                if any(original.metadata.get(key) != current.metadata.get(key) for key in ("id", "ids")):
+                                    raise SyncError("Destination identity changed during attribution update")
+                                adapter.preflight(current)
+                                session.observe(adapter, current)
+                                if not delta(current.items, desired)[2]:
+                                    raise SyncError("List changed during attribution update; baseline not advanced")
+                            authority_guard()
+                    session.commit(result.baseline)
                 entry = {"rule": rule.id, "source_count": len(left.items),
                          "destination_count": len(right.items), "targets": changes,
-                         "attribution": attribution_report}
+                          "attribution": attribution_report,
+                          "status": "preview" if args.dry_run else "converged",
+                          "converged": not args.dry_run}
+            except StateError:
+                raise
+            except Deferred:
+                if rule.direction != "source_to_destination":
+                    failed_writers.add(parse_url(rule.source))
+                if rule.direction != "destination_to_source":
+                    failed_writers.add(parse_url(rule.destination))
+                entry = {"rule": rule.id, "status": "pending_verification", "converged": False,
+                         "reason": "Acknowledged effects await a complete consistent observation"}
             except SyncError as exc:
                 if isinstance(exc, ApiError) and exc.status in {401, 403}:
                     raise
@@ -266,15 +343,13 @@ def main(argv=None):
                     failed_writers.add(parse_url(rule.source))
                 if rule.direction != "destination_to_source":
                     failed_writers.add(parse_url(rule.destination))
-                entry = {"rule": rule.id, "error": str(exc)}
+                entry = {"rule": rule.id, "status": "blocked" if isinstance(exc, Blocked) else "failed",
+                         "converged": False, "error": str(exc)}
                 print(json.dumps(entry, sort_keys=True), flush=True)
                 summary.append(entry)
                 continue
             print(json.dumps(entry, sort_keys=True), flush=True)
             summary.append(entry)
-            if not args.dry_run:
-                state["rules"][rule.id] = result.baseline
-                store.save(state)
         if path := os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(path, "a", encoding="utf-8") as stream:
                 stream.write("## List sync\n```json\n" + json.dumps(summary, indent=2) + "\n```\n")

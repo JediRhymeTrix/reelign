@@ -7,6 +7,10 @@ class SyncError(Exception):
     """An actionable failure safe to display without secrets."""
 
 
+class StateError(SyncError):
+    """Durable state is unavailable; stop before further remote mutations."""
+
+
 @dataclass
 class Item:
     media_type: str

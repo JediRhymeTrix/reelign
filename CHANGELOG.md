@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.2.0 — Unreleased (staged-recovery release candidate)
+
+- Use the documented typed/sorted Trakt list route instead of bare `/items`.
+  This is protocol alignment, **not a verified fix** for server page consistency.
+- Redesign Trakt reads around explicit rank order, effective pagination headers
+  and independent complete traversal confirmation with different page boundaries.
+  Reject mixed observations without claiming transactional API snapshots.
+- Verify acknowledged writes against exact expected membership and acknowledgement
+  list summaries, allowing an unchanged stale summary count only with independently
+  confirmed complete items; retain original metadata and fail on unrelated edits.
+- Remove redundant empty-phase reads and hidden reorder reads. Revalidate target
+  identity/permissions on every refreshed snapshot before writes/checkpointing.
+- Never replay ambiguous mutations after timeouts, 5xx or invalid responses.
+  Pace authenticated Trakt writes and preserve account Retry-After quiet periods
+  across independent rules. Explicit rejected 429s retain bounded safe retries.
+- Add encrypted write-ahead journals: persist each batch/rank/metadata intent before
+  sending, retain acknowledged/unknown outcomes, and resume verification on later
+  scheduled runs without replaying ambiguous mutations or advancing baselines early.
+- Distinguish `converged`, `pending_verification` and blocked/error outcomes. Healthy
+  acknowledged deferral exits zero but is explicitly not synchronized; unknown,
+  malformed/partial responses and expired (24-hour) pending work require review.
+- Resume bidirectional work using saved logical intent and verified own progress,
+  external net-change rebasing and cumulative deletion budgets. Pending endpoints
+  remain reserved even when their writer is not selected.
+- Migrate encrypted payloads to schema2 on first journaled mutation, retaining
+  the original key/OAuth and compatible schema1 reads. Older executors refuse2.
+  State persistence failures stop all further mutations globally.
+- Keep read retry budgets, schedules and configuration unchanged. No alerts,
+  cache-busting parameters or automatic whole-workflow reruns. Trakt itself may
+  still serve inconsistent pages; staged verification does not make reads atomic.
+
 ## 1.1.2 — 2026-11-06
 
 - Add an acknowledged-write-only Trakt visibility barrier: up to five full reads

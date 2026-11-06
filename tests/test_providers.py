@@ -60,12 +60,12 @@ class HttpTests(unittest.TestCase):
                 self.assertNotIn("fixture-secret", str(caught.exception))
                 self.assertIsNone(caught.exception.__cause__)
 
-    def test_get_put_and_only_idempotent_list_posts_retry(self):
-        cases = [("GET", "/x", True), ("PUT", "/x", True),
-                 ("POST", "/users/owner/lists/1/items", True),
-                 ("POST", "/users/owner/lists/1/items/remove", True),
-                 ("POST", "/lists/1/items/add", True),
-                 ("POST", "/lists/1/items/reorder", True),
+    def test_only_get_retries_ambiguous_503(self):
+        cases = [("GET", "/x", True), ("PUT", "/x", False),
+                 ("POST", "/users/owner/lists/1/items", False),
+                 ("POST", "/users/owner/lists/1/items/remove", False),
+                 ("POST", "/lists/1/items/add", False),
+                 ("POST", "/lists/1/items/reorder", False),
                  ("POST", "/oauth/token", False),
                  ("POST", "/users/owner/lists", False), ("DELETE", "/lists/1", False)]
         for method, path, retry in cases:
@@ -172,9 +172,11 @@ def trakt_item(n, rank, date="2026-01-01T00:00:00Z", kind="movie"):
             kind: {"ids": {"trakt": n, "tmdb": n, "imdb": f"tt{n:07}"}}}
 
 
-def trakt_page(items, page=1, pages=1, total=None):
+def trakt_page(items, page=1, pages=1, total=None, limit=None):
+    total = len(items) if total is None else total
+    limit = limit or max(1, (total + max(1, pages) - 1) // max(1, pages))
     return (items, {"X-Pagination-Page": str(page), "X-Pagination-Page-Count": str(pages),
-                    "X-Pagination-Item-Count": str(len(items) if total is None else total)})
+                    "X-Pagination-Item-Count": str(total), "X-Pagination-Limit": str(limit)})
 
 
 class URLTests(unittest.TestCase):
@@ -294,7 +296,7 @@ class TraktTests(unittest.TestCase):
         rows = [trakt_item(1, 3, "2026-01-01T00:00:00Z"),
                 trakt_item(2, 2, "2026-02-01T00:00:00Z"),
                 trakt_item(3, 1, "2026-02-01T00:00:00Z")]
-        http = FakeHttp(trakt_meta(3), trakt_page(rows), trakt_meta(3))
+        http = FakeHttp(trakt_meta(3), trakt_page(list(reversed(rows))), trakt_meta(3))
         result = Trakt(TRAKT_URL, http, "owner").snapshot()
         self.assertEqual([i.ids["trakt"] for i in result.items], [3, 2, 1])
 
@@ -340,11 +342,16 @@ class TraktTests(unittest.TestCase):
         first = trakt_item(1, 1, "2026-01-01T00:00:00Z")
         second = trakt_item(2, 2, "2026-02-01T00:00:00Z")
         for order, expected in [("added", [2, 1]), ("rank", [1, 2])]:
-            http = FakeHttp(trakt_meta(), trakt_page([second], 1, 2, 2),
-                            trakt_page([first], 2, 2, 2), trakt_meta())
+            # Explicit rank traversal is confirmed with a different partition.
+            third = trakt_item(3, 3, "2026-01-15T00:00:00Z")
+            http = FakeHttp(trakt_meta(3), trakt_page([first, second], 1, 2, 3),
+                            trakt_page([third], 2, 2, 3),
+                            trakt_page([first], 1, 3, 3),
+                            trakt_page([second], 2, 3, 3),
+                            trakt_page([third], 3, 3, 3), trakt_meta(3))
             snap = Trakt(TRAKT_URL, http, "owner").snapshot(order=order)
-            self.assertEqual([i.ids["trakt"] for i in snap.items], expected)
-            self.assertEqual({i.entry_id for i in snap.items}, {1001, 1002})
+            self.assertEqual([i.ids["trakt"] for i in snap.items], [2, 3, 1] if order == "added" else [1, 2, 3])
+            self.assertEqual({i.entry_id for i in snap.items}, {1001, 1002, 1003})
             self.assertEqual(http.calls[2][2]["page"], 2)
             self.assertEqual(snap.provider, "trakt")
 
@@ -382,16 +389,15 @@ class TraktTests(unittest.TestCase):
             with self.subTest(result=result), self.assertRaises(SyncError):
                 Trakt(TRAKT_URL, FakeHttp(result), "owner").add(items[:1])
 
-    def test_reorder_rereads_entry_ids_and_maps_canonical_representatives(self):
+    def test_reorder_uses_supplied_entry_ids_and_maps_canonical_representatives(self):
         http = FakeHttp({"updated": 2})
         provider = Trakt(TRAKT_URL, http, "owner")
-        old = Snapshot(TRAKT_URL, "", "", [Item("movie", {"tmdb": 1}, entry_id=9)])
         latest = Snapshot(TRAKT_URL, "", "", [Item("movie", {"tmdb": 1, "trakt": 11}, entry_id=101),
                                               Item("movie", {"tmdb": 2, "trakt": 22}, entry_id=202)])
         desired = [Item("movie", {"tmdb": "2"}), Item("movie", {"trakt": "11"})]
         with patch.object(provider, "snapshot", return_value=latest) as read:
-            provider.reorder(desired, old)
-        read.assert_called_once_with(order="rank")
+            provider.reorder(desired, latest)
+        read.assert_not_called()
         self.assertEqual(http.calls[0][1], "/users/owner/lists/films/items/reorder")
         self.assertEqual(http.calls[0][3], {"rank": [202, 101]})
 

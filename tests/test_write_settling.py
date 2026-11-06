@@ -27,7 +27,7 @@ class WriteSettlingTests(unittest.TestCase):
         return result, sleep
 
     def test_acknowledged_add_survives_three_stale_counts_without_readding(self):
-        stale = [trakt_meta(1), trakt_page([trakt_item(1, 1)], total=2)]
+        stale = [trakt_meta(1), trakt_page([trakt_item(1, 1), trakt_item(2, 2)], total=2)]
         http = FakeHttp({"added": {"movies": 1}}, *(stale * 3), *complete([1, 2]))
         provider = Trakt(TRAKT_URL, http, "owner")
         provider.add([Item("movie", {"trakt": 2})])

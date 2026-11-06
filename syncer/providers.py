@@ -218,9 +218,9 @@ class _Provider:
                 field = "added" if action == "add" else "deleted"
             result, _ = self.http.request("POST", path, body=body)
             _write_result(result, expected, field, allow_existing=action == "add")
-            self._acknowledge_membership(items[offset:offset + 100], action)
+            self._acknowledge_membership(items[offset:offset + 100], action, result)
 
-    def _acknowledge_membership(self, items, action):
+    def _acknowledge_membership(self, items, action, result=None):
         """Only Trakt currently needs a read-after-write visibility barrier."""
 
     def add(self, items):
@@ -453,8 +453,26 @@ class Trakt(_Provider):
         self.path = f"/users/{self.owner}/lists/{self.slug}"
         self._pending_membership = _IdentityIndex()
         self._pending_order = None
+        self._last_snapshot = None
+        self._write_base = None
+        self._write_summary = None
+        self._confirmed_write = None
 
-    def _acknowledge_membership(self, items, action):
+    def _record_write_summary(self, result):
+        summary = result.get("list") if result is not None else None
+        self._write_summary = None
+        if summary is not None:
+            summary = _object(summary)
+            count = _integer(summary.get("item_count"))
+            updated = summary.get("updated_at")
+            _timestamp(updated)
+            self._write_summary = {"item_count": count, "updated_at": updated}
+
+    def _acknowledge_membership(self, items, action, result=None):
+        if not self._pending_membership.records:
+            self._write_base = self._last_snapshot
+        self._record_write_summary(result)
+        self._confirmed_write = None
         for item in items:
             self._pending_membership.record(item, action)
         self._pending_order = None
@@ -462,10 +480,18 @@ class Trakt(_Provider):
     def snapshot(self, order="added"):
         pending = bool(self._pending_membership.records or self._pending_order is not None)
         if not pending:
-            return super().snapshot(order)
-        result = self._read_snapshot(order, (2, 5, 10, 20), settling=True)
-        self._pending_membership = _IdentityIndex()
-        self._pending_order = None
+            result = super().snapshot(order)
+        else:
+            result = self._read_snapshot(order, (2, 5, 10, 20), settling=True)
+            if result.metadata["item_count"] != len(result.items):
+                self._confirmed_write = (result.items, dict(self._write_summary))
+            self._pending_membership = _IdentityIndex()
+            self._pending_order = None
+            self._write_base = None
+            self._write_summary = None
+        if result.metadata["item_count"] == len(result.items):
+            self._confirmed_write = None
+        self._last_snapshot = result
         return result
 
     def _verify_pending_write(self, snapshot):
@@ -474,10 +500,25 @@ class Trakt(_Provider):
         present, added, removed = map(set, sequences)
         if not added <= present or removed & present:
             raise _SnapshotChanged("Trakt acknowledged membership write is not yet visible")
+        if self._write_base is not None:
+            (base, current, additions, removals), _ = identify(
+                self._write_base.items, snapshot.items,
+                self._pending_membership.items("add"), self._pending_membership.items("remove"))
+            if set(current) != (set(base) | set(additions)) - set(removals):
+                raise _SnapshotChanged("Trakt membership differs from acknowledged write expectation")
+        if self._write_summary is not None and self._write_summary["item_count"] != len(snapshot.items):
+            raise _SnapshotChanged("Trakt acknowledged count is not yet visible")
         if self._pending_order is not None:
             ranked = sorted(snapshot.items, key=lambda item: item.rank)
             if [item.entry_id for item in ranked] != self._pending_order:
                 raise _SnapshotChanged("Trakt acknowledged rank order is not yet visible")
+
+    def _check_write_metadata(self, metadata, baseline):
+        # Membership writes legitimately change count/update time, but do not
+        # authorize unrelated visibility, description, owner or sort edits.
+        keys = set(self._stable(metadata)) - {"item_count", "updated_at"}
+        if any(metadata.get(key) != baseline.metadata.get(key) for key in keys):
+            raise _SnapshotChanged("Trakt metadata changed outside the acknowledged write")
 
     def _metadata(self):
         metadata, _ = self.http.request("GET", self.path)
@@ -500,25 +541,35 @@ class Trakt(_Provider):
         return Item(kind, dict(ids), row.get("listed_at"), _integer(row.get("rank")),
                     _integer(row.get("id"), 1))
 
-    def _snapshot_once(self, order):
-        _order(order)
-        before = self._metadata()
-        count = _integer(before["item_count"])
+    @staticmethod
+    def _sequence(items):
+        return [(item.entry_id, item.rank, tuple(sorted(item.aliases())), item.added_at)
+                for item in items]
+
+    def _read_items(self, requested_limit, order):
+        """Validate one complete explicit-rank traversal using effective headers."""
         items, page, page_count = [], 1, None
+        count, effective_limit = None, None
         ranks, entries = set(), set()
         identities = _IdentityIndex()
         dates_present = None
         while True:
-            value, headers = self.http.request("GET", self.path + "/items",
-                                               params={"page": page, "limit": 100})
+            value, headers = self.http.request("GET", self.path + "/items/movie,show,season,episode/rank/asc",
+                params={"page": page, "limit": requested_limit})
             if not isinstance(value, list):
                 raise SyncError("Trakt returned invalid list items")
             headers = _headers(headers)
             returned_page = _integer(headers.get("x-pagination-page"), 1)
             pages = _integer(headers.get("x-pagination-page-count"))
             total = _integer(headers.get("x-pagination-item-count"))
+            limit = _integer(headers.get("x-pagination-limit"), 1)
             if returned_page != page:
                 raise SyncError("Trakt returned an unexpected page number")
+            if limit > requested_limit:
+                raise SyncError("Trakt returned an unexpected effective page limit")
+            if (headers.get("x-sort-by", "rank") != "rank"
+                    or headers.get("x-sort-how", "asc") != "asc"):
+                raise SyncError("Trakt did not return the requested rank order")
             if (total and pages == 0) or (not total and pages > 1) or pages > max(1, total):
                 raise SyncError("Trakt returned inconsistent pagination")
             rows = [self._item(row) for row in value]
@@ -528,26 +579,34 @@ class Trakt(_Provider):
                 raise SyncError("Trakt pagination ended before the final page")
             for item in rows:
                 identities.record(item)
+                if item.added_at is not None:
+                    _timestamp(item.added_at)
                 if order == "added":
                     has_date = item.added_at is not None
                     if dates_present is not None and dates_present != has_date:
                         raise SyncError("Incomplete addition dates; refusing uncertain ordering")
                     dates_present = has_date
-                    if item.added_at is not None:
-                        _timestamp(item.added_at)
             for item in rows:
                 if item.rank in ranks or item.entry_id in entries:
                     raise _SnapshotOverlap("Trakt returned duplicate ranks or list-entry IDs")
                 ranks.add(item.rank)
                 entries.add(item.entry_id)
-            if total != count or (page_count is not None and pages != page_count):
+            if count is not None and (total != count or pages != page_count or limit != effective_limit):
                 identify(items + rows)
                 if order == "added":
                     _newest_first(items + rows)
-                raise _SnapshotChanged("Trakt pagination changed during snapshot")
+                raise _SnapshotChanged(f"Trakt pagination changed during snapshot "
+                    f"(page={page}, expected_total={count}, observed_total={total}, "
+                    f"expected_pages={page_count}, observed_pages={pages})")
+            count, effective_limit = total, limit
             page_count = pages
-            if (count and pages == 0) or (not count and pages > 1) or pages > max(1, count):
-                raise SyncError("Trakt returned inconsistent pagination")
+            if pages != (count + limit - 1) // limit and not (count == 0 and pages == 1):
+                raise SyncError("Trakt returned inconsistent effective pagination")
+            expected_rows = min(limit, max(0, count - (page - 1) * limit))
+            if len(rows) != expected_rows:
+                raise SyncError("Trakt page row count does not match effective pagination")
+            if any(item.rank != len(items) + offset for offset, item in enumerate(rows, 1)):
+                raise _SnapshotOverlap("Trakt rank sequence has gaps or is not ascending")
             items.extend(rows)
             if len(items) > count:
                 raise SyncError("Trakt pagination contains excess items")
@@ -559,11 +618,47 @@ class Trakt(_Provider):
         if len(items) != count:
             raise SyncError("List snapshot count mismatch; refusing incomplete snapshot")
         identify(items)
-        items = sorted(items, key=lambda item: item.rank) if order == "rank" else _newest_first(items)
+        return items, count, effective_limit, page_count
+
+    def _snapshot_once(self, order):
+        _order(order)
+        before = self._metadata()
+        items, count, limit, pages = self._read_items(250, order)
+        # Different page boundaries expose a stable page-keyed hybrid that a
+        # repeated identical request could reproduce indefinitely. Still not an
+        # isolation guarantee; the API provides no revision-pinned pagination.
+        pending = bool(self._pending_membership.records or self._pending_order is not None)
+        summary_mismatch = count != before["item_count"]
+        if (summary_mismatch and self._confirmed_write is None
+                and not (pending and self._write_base is not None and self._write_summary is not None)):
+            raise _SnapshotChanged(f"Trakt metadata/items count disagreement "
+                f"(metadata_total={before['item_count']}, items_total={count})")
+        confirm = pages > 1 or summary_mismatch
+        if confirm:
+            requested = min(100, max(1, limit - 1))
+            checked, checked_count, checked_limit, _ = self._read_items(requested, order)
+            if checked_count != count or self._sequence(items) != self._sequence(checked):
+                raise _SnapshotChanged("Trakt independent partition confirmation changed")
+            if pages > 1 and checked_limit == limit:
+                raise SyncError("Trakt cannot independently confirm the paginated partition")
         after = self._metadata()
         if self._stable(before) != self._stable(after):
             raise _SnapshotChanged("List metadata changed during snapshot; retry next run")
-        return self._snapshot(before, items, count)
+        result = self._snapshot(before, items if order == "rank" else _newest_first(items), count)
+        if summary_mismatch:
+            if pending and self._write_base is not None and self._write_summary is not None:
+                self._check_write_metadata(before, self._write_base)
+                self._verify_pending_write(result)
+            elif self._confirmed_write is not None:
+                previous, summary = self._confirmed_write
+                self._check_write_metadata(before, self._last_snapshot)
+                if (summary["item_count"] != count
+                        or self._sequence(items) != self._sequence(sorted(previous, key=lambda item: item.rank))):
+                    raise _SnapshotChanged("Trakt confirmed write evidence no longer matches")
+            else:
+                raise _SnapshotChanged(f"Trakt metadata/items count disagreement "
+                    f"(metadata_total={before['item_count']}, items_total={count})")
+        return result
 
     def preflight(self, snapshot):
         metadata = self._check_snapshot(snapshot)
@@ -596,7 +691,8 @@ class Trakt(_Provider):
         if not items:
             return
         identify(items)
-        current = self.snapshot(order="rank")
+        self._check_snapshot(snapshot)
+        current = snapshot
         wanted, found = _same_membership(items, current.items)
         entries = {key: _integer(item.entry_id, 1) for key, item in zip(found, current.items)}
         ranks = [entries[key] for key in wanted]
@@ -607,6 +703,9 @@ class Trakt(_Provider):
         if (_has_value(result.get("not_found")) or _has_value(result.get("error"))
                 or _has_value(result.get("skipped_ids")) or _integer(result.get("updated")) != len(items)):
             raise SyncError("Trakt reported a partial reorder; verify before retrying")
+        self._record_write_summary(result)
+        self._confirmed_write = None
+        self._write_base = current
         self._pending_order = list(ranks)
 
 

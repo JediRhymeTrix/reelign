@@ -16,12 +16,39 @@ Identity is resolved using shared **IMDb, TMDB, Trakt, and TVDB IDs**, qualified
 
 Snapshots must be complete. Counts, pagination/cursors, and relevant metadata are checked; a moving, truncated, or inconsistent response is not treated as an empty source. All enabled rules still need a source and destination accessible through the provider APIs.
 
+### Trakt API-contract reads (1.2)
+
+Controlled 251-item tests reproduce mixed old/new pages after acknowledged
+reorder, including on this documented route. Standard no-cache headers do not
+guarantee freshness. The reader rejects those responses; durable staged recovery
+below handles later verification without weakening consistency checks.
+
+The documented `/items/movie,show,season,episode/rank/asc` route requests explicit
+rank/ascending order with requested page size 250. All four types are included so
+unsupported seasons/episodes fail explicitly rather than being silently filtered.
+Every response must supply its effective page size, page/count headers and complete
+rows. Multi-page reads are independently confirmed with a second complete traversal
+using different page boundaries (at most 100 items/page). Entry IDs, typed identities,
+ranks and addition dates must agree. Missing headers, gaps, partial pages, conflicting
+identities and unsupported media fail closed; no deduplication repairs a snapshot.
+
+This detects many mixed-generation responses but **does not provide API snapshot
+isolation**. Two matching observations are not a server transaction. If distinct
+effective partitions cannot be obtained, the paginated read fails closed.
+
+After our own acknowledged write only, a lagging summary count may be superseded by
+independently confirmed complete items matching the exact expected membership and
+acknowledged list count. Unrelated metadata edits remain errors. Original metadata
+is retained, not fabricated; in-memory confirmation evidence is rechecked through
+the checkpoint. Other count disagreements remain failures, not permission to delete.
+
 ### Bounded recovery when a list changes during a read
 
 If otherwise valid responses show a changed total/page count or metadata, Reelign
 discards that entire snapshot and starts again from fresh metadata and page one
 (or a fresh MDBList cursor). It makes **at most three total attempts**, waiting
-**1 second, then 2 seconds** between attempts. Normal reads add no requests or delay.
+**1 second, then 2 seconds** between attempts. Stable reads add no retry delay;
+multi-page Trakt confirmation still makes the additional traversal described above.
 
 Observed malformed data is validated **before** deciding to retry: wrong pages,
 invalid IDs, duplicate identities/ranks, unsupported media, invalid cursors,
@@ -31,8 +58,9 @@ If all read attempts change, the rule fails closed without advancing its baselin
 
 This is a read-only retry boundary, **not** an entire-sync retry. It does not
 replay additions/removals/reorders, OAuth refresh, or exhausted transport/auth/quota
-failures. Existing per-request HTTP retries and all convergence/deletion checks
-remain in force. A failure after earlier writes can still require a new preview;
+failures. GET transport retries remain bounded; ambiguous mutation replay is
+disabled as described below. All convergence/deletion checks remain in force.
+A failure after earlier writes can still require a new preview;
 read recovery does not make cross-service operations transactional.
 
 Warnings identify only provider and attempt. These retries address transient
@@ -54,11 +82,54 @@ malformed/mixed dates for addition ordering, unsupported media, invalid paginati
 auth/quota/transport failures remain terminal. Neither a successful write nor a
 failed/ambiguous write response is replayed by this verification policy.
 
-Successful verified visibility clears the in-memory pending marker. If settling
-is exhausted, the run fails without advancing the rule's baseline; already
-acknowledged remote changes can remain. Inspect the lists and run a new preview
-before another apply. There is no automatic whole-workflow rerun or guarantee
-that a provider will become consistent in this bounded window. Cron is unchanged.
+Successful verified visibility clears the in-memory marker. If an acknowledged
+write remains inconsistent, the encrypted journal survives for the next scheduled
+run. Its report is `status: pending_verification`, `converged: false`; the confirmed
+baseline does not advance and no further mutations occur for that rule. Healthy
+deferral exits zero, which means the executor safely deferred—not that lists synced.
+Dependent endpoint readers/writers are blocked, including across selection filters.
+After24hours unresolved pending work becomes action-required/nonzero. There is no
+automatic whole-workflow rerun or consistency deadline guaranteed by Trakt.
+
+### Mutation outcomes and quota compliance
+
+Authenticated Trakt POST/PUT/DELETE sends share a minimum one-second interval per
+HTTP client across rules. Explicit rejected 429 responses may retry supported list
+operations within bounds, honoring Retry-After; long/exhausted rejection quiet
+periods also block later independent rules on that client. OAuth and list creation
+are not replayed. Missing Retry-After uses bounded exponential backoff with jitter.
+
+Timeouts, connection/read loss, 5xx or invalid JSON after a mutation have an
+**unknown outcome** and are never automatically replayed. Their intent/outcome
+remains encrypted. A later strict observation may prove the requested effect;
+otherwise recovery stays blocked/nonzero, even if the old before-state reappears.
+Partial/malformed mutation responses also require reviewed recovery. Baselines do
+not advance until every phase, final membership/order and attribution are verified.
+
+### Durable staged recovery
+
+Each actual membership batch, rank request and metadata PUT has a durable intent
+before send and an outcome checkpoint afterward. A process interrupted between
+these saves cannot cause a blind resend. State persistence errors stop the entire
+run. Confirmed baseline advancement and journal removal happen in one atomic save.
+
+The journal retains intended reconciliation, expected own progress, endpoint IDs,
+operation predicates and cumulative deletion limits. After verification, one-way
+rules replan against fresh authority; bidirectional rules merge observed external
+net changes against expected progress, rather than treating our partial writes as
+user deletions. Conflicting or regressed evidence fails closed. This observes net
+changes, not invisible remove/re-add history; providers offer no cross-service CAS.
+
+Schema1 encrypted state remains readable. The first journaled mutation writes
+payload schema2 with the same encryption key and OAuth. Old binaries intentionally
+refuse schema2 instead of silently discarding pending operations. Do not downgrade
+an active journal or delete it as a retry mechanism. Local atomic replacement
+protects process interruption; power-loss durability depends on filesystem/storage.
+
+Current staged recovery supports one complete MDBList reorder request (up to1000
+items). Larger MDBList reorders are refused before the first reorder mutation;
+anchored multi-request recovery needs a separate verified projection contract.
+Trakt reorders and membership batching retain their existing supported behavior.
 
 ## Read-only and writable endpoints
 
@@ -150,10 +221,10 @@ These count **actual removed identities**, not net list-size changes. Allowing e
 For each rule, Reelign:
 
 1. Reads complete snapshots and calculates a pure plan using the current baseline.
-2. Preflights every writable endpoint and rereads membership to detect concurrent edits.
+2. Preflights every writable endpoint and rereads membership to detect concurrent edits. Every refreshed target snapshot revalidates identity and permissions before later writes/checkpointing.
 3. On a dry run, returns counts here—no lists, OAuth, or baselines are written.
 4. Ensures supported custom-sort settings, adds missing members on **all** written endpoints, and verifies additions before **any** removals for that rule.
-5. Rechecks concurrent membership/read-only authority, removes approved extras, verifies membership, reorders when needed, and rereads all endpoints plus any read-only authority.
+5. Rechecks concurrent membership/read-only authority, removes approved extras, verifies membership, reorders when needed using the current validated entry IDs, and rereads all endpoints plus any read-only authority. Empty phases reuse validated observations rather than performing redundant full reads.
 6. Saves that rule’s new encrypted baseline only after successful convergence.
 
 “Additions before removals” is a per-rule contract, not a transaction across every rule. Neither provider offers a cross-service transaction. Failures may leave successful additions, metadata changes, deletions, or reorder operations already applied on a remote list. Reelign cannot roll those back atomically. Inspect actual lists and run a fresh preview after failure; do not assume “failed” means “nothing changed.”
