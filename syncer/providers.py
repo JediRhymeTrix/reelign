@@ -18,6 +18,60 @@ class _SnapshotChanged(SyncError):
     """A well-formed list changed while being read; discard and restart its read."""
 
 
+class _SnapshotOverlap(SyncError):
+    """Ambiguous ranks/entry IDs; retryable only after our acknowledged write."""
+
+
+class _IdentityIndex:
+    """Incremental typed-ID components; preserve aliases without quadratic scans.
+
+    Each alias points at its component record. Union by size bounds reassignment;
+    conflicting IDs within one component are terminal, never hidden as overlap.
+    """
+
+    def __init__(self):
+        self.by_alias = {}
+        self.records = {}
+        self.next_key = 0
+
+    def record(self, item, action=None):
+        aliases = item.aliases()
+        keys = {self.by_alias[alias] for alias in aliases if alias in self.by_alias}
+        merged = {}
+        for key in keys:
+            merged.update(self.records[key]["aliases"])
+        merged.update({alias: True for alias in aliases})
+        ids = {}
+        for alias in merged:
+            _, provider, value = alias.split(":", 2)
+            if provider in ids and ids[provider] != value:
+                raise SyncError("Conflicting provider IDs; refusing ambiguous match")
+            ids[provider] = value
+        if keys:
+            key = max(keys, key=lambda k: len(self.records[k]["aliases"]))
+            record = self.records[key]
+            if action is None:
+                actions = {self.records[k]["action"] for k in keys}
+                if len(actions) > 1:
+                    raise SyncError("Conflicting pending membership expectations")
+            for other in keys - {key}:
+                self.records.pop(other)
+        else:
+            key = self.next_key
+            self.next_key += 1
+            record = {"aliases": {}, "action": action, "item": item}
+            self.records[key] = record
+        record["aliases"] = merged
+        record["item"] = Item(item.media_type, ids)
+        if action is not None:
+            record["action"] = action
+        for alias in merged:
+            self.by_alias[alias] = key
+
+    def items(self, action):
+        return [record["item"] for record in self.records.values() if record["action"] == action]
+
+
 def _object(value):
     if not isinstance(value, dict):
         raise SyncError("API returned an invalid object")
@@ -118,16 +172,26 @@ class _Provider:
         Retry only explicitly classified list changes, leaving malformed responses
         and exhausted transport/rate-limit errors terminal. No partial read escapes.
         """
+        return self._read_snapshot(order, (1, 2))
+
+    def _read_snapshot(self, order, delays, *, settling=False):
         _order(order)
-        for attempt in range(3):
+        attempts = len(delays) + 1
+        for attempt in range(attempts):
             try:
-                return self._snapshot_once(order)
-            except _SnapshotChanged:
-                if attempt == 2:
+                result = self._snapshot_once(order)
+                if settling:
+                    self._verify_pending_write(result)
+                return result
+            except (_SnapshotChanged, _SnapshotOverlap) as exc:
+                if isinstance(exc, _SnapshotOverlap) and not settling:
                     raise
-                print(f"WARNING: {self.provider} list changed during read; "
-                      f"restarting full snapshot ({attempt + 2}/3)", file=sys.stderr)
-                time.sleep(attempt + 1)
+                if attempt == attempts - 1:
+                    raise
+                reason = "write verification not yet consistent" if settling else "list changed during read"
+                print(f"WARNING: {self.provider} {reason}; "
+                      f"restarting full snapshot ({attempt + 2}/{attempts})", file=sys.stderr)
+                time.sleep(delays[attempt])
 
     def _snapshot(self, metadata, items, count):
         if len(items) != count:
@@ -154,6 +218,10 @@ class _Provider:
                 field = "added" if action == "add" else "deleted"
             result, _ = self.http.request("POST", path, body=body)
             _write_result(result, expected, field, allow_existing=action == "add")
+            self._acknowledge_membership(items[offset:offset + 100], action)
+
+    def _acknowledge_membership(self, items, action):
+        """Only Trakt currently needs a read-after-write visibility barrier."""
 
     def add(self, items):
         self._mutate(items, "add")
@@ -383,6 +451,33 @@ class Trakt(_Provider):
     def __init__(self, url, http, user):
         super().__init__(url, http, user)
         self.path = f"/users/{self.owner}/lists/{self.slug}"
+        self._pending_membership = _IdentityIndex()
+        self._pending_order = None
+
+    def _acknowledge_membership(self, items, action):
+        for item in items:
+            self._pending_membership.record(item, action)
+        self._pending_order = None
+
+    def snapshot(self, order="added"):
+        pending = bool(self._pending_membership.records or self._pending_order is not None)
+        if not pending:
+            return super().snapshot(order)
+        result = self._read_snapshot(order, (2, 5, 10, 20), settling=True)
+        self._pending_membership = _IdentityIndex()
+        self._pending_order = None
+        return result
+
+    def _verify_pending_write(self, snapshot):
+        sequences, _ = identify(snapshot.items, self._pending_membership.items("add"),
+                                self._pending_membership.items("remove"))
+        present, added, removed = map(set, sequences)
+        if not added <= present or removed & present:
+            raise _SnapshotChanged("Trakt acknowledged membership write is not yet visible")
+        if self._pending_order is not None:
+            ranked = sorted(snapshot.items, key=lambda item: item.rank)
+            if [item.entry_id for item in ranked] != self._pending_order:
+                raise _SnapshotChanged("Trakt acknowledged rank order is not yet visible")
 
     def _metadata(self):
         metadata, _ = self.http.request("GET", self.path)
@@ -411,6 +506,8 @@ class Trakt(_Provider):
         count = _integer(before["item_count"])
         items, page, page_count = [], 1, None
         ranks, entries = set(), set()
+        identities = _IdentityIndex()
+        dates_present = None
         while True:
             value, headers = self.http.request("GET", self.path + "/items",
                                                params={"page": page, "limit": 100})
@@ -430,9 +527,17 @@ class Trakt(_Provider):
             if not rows and page < pages:
                 raise SyncError("Trakt pagination ended before the final page")
             for item in rows:
-                item.aliases()
+                identities.record(item)
+                if order == "added":
+                    has_date = item.added_at is not None
+                    if dates_present is not None and dates_present != has_date:
+                        raise SyncError("Incomplete addition dates; refusing uncertain ordering")
+                    dates_present = has_date
+                    if item.added_at is not None:
+                        _timestamp(item.added_at)
+            for item in rows:
                 if item.rank in ranks or item.entry_id in entries:
-                    raise SyncError("Trakt returned duplicate ranks or list-entry IDs")
+                    raise _SnapshotOverlap("Trakt returned duplicate ranks or list-entry IDs")
                 ranks.add(item.rank)
                 entries.add(item.entry_id)
             if total != count or (page_count is not None and pages != page_count):
@@ -502,6 +607,7 @@ class Trakt(_Provider):
         if (_has_value(result.get("not_found")) or _has_value(result.get("error"))
                 or _has_value(result.get("skipped_ids")) or _integer(result.get("updated")) != len(items)):
             raise SyncError("Trakt reported a partial reorder; verify before retrying")
+        self._pending_order = list(ranks)
 
 
 def make_provider(url, http, user):

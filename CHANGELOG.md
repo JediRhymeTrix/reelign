@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.2 — 2026-11-06
+
+- Add an acknowledged-write-only Trakt visibility barrier: up to five full reads
+  with 2/5/10/20s waits after validated add/remove/reorder responses. Verify actual
+  addition/removal visibility and exact entry-rank order before continuing.
+- Retry temporary count/rank overlap only in that pending-write context; never
+  deduplicate or accept inconsistent snapshots, replay a write, or advance a
+  baseline after failed verification. Pre-write duplicates remain terminal.
+- Preserve conflicting-ID/malformed-date validation before overlap handling, and
+  use incremental typed identity indexing to retain aliases without quadratic scans.
+- Independently reviewed, covered by 22 new regression tests and disposable live
+  write/read verification. No cron, alert, OAuth or state-format changes.
+
 ## 1.1.1 — 2026-11-03
 
 - Restart unstable complete list reads up to three total attempts with 1s/2s

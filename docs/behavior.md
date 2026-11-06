@@ -38,6 +38,28 @@ read recovery does not make cross-service operations transactional.
 Warnings identify only provider and attempt. These retries address transient
 snapshot failures, not delayed/missing GitHub cron triggers; scheduling is unchanged.
 
+### Trakt read-after-write settling
+
+Trakt may briefly return mixed old/new counts or ranks after acknowledging a
+write. Following **our own validated add, remove or reorder response only**, the
+next verification snapshot has up to **five full read attempts**, waiting
+**2, 5, 10 and 20 seconds**. It verifies acknowledged additions are visible,
+removed items are absent and reordered list-entry IDs match the requested order.
+A complete but stale response therefore does not prematurely pass verification.
+
+Temporary overlapping ranks/entry IDs in this acknowledged-write context trigger
+a fresh read, **not deduplication or acceptance**. The same duplicate response
+without our own pending write still fails immediately. Conflicting provider IDs,
+malformed/mixed dates for addition ordering, unsupported media, invalid pagination,
+auth/quota/transport failures remain terminal. Neither a successful write nor a
+failed/ambiguous write response is replayed by this verification policy.
+
+Successful verified visibility clears the in-memory pending marker. If settling
+is exhausted, the run fails without advancing the rule's baseline; already
+acknowledged remote changes can remain. Inspect the lists and run a new preview
+before another apply. There is no automatic whole-workflow rerun or guarantee
+that a provider will become consistent in this bounded window. Cron is unchanged.
+
 ## Read-only and writable endpoints
 
 Your own source and another curator’s publicly readable source are equally supported. Read-only endpoints need API read access, not ownership. Writable Trakt lists must belong to the authenticated account. Writable MDBList lists must belong to the API-key account and be explicitly **static**, not dynamic/generated. Bidirectional rules require both sides writable.

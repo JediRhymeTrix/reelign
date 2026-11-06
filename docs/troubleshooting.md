@@ -44,6 +44,7 @@ Never enable apply to “see if it fixes” an unexpected preview. Do not delete
 | API 404/private source | Verify direct URL and API read permission. A browser session’s visibility does not prove API access |
 | Unsupported item/duplicate/conflicting IDs | Inspect source data and provider IDs. Movies/shows only; ambiguous or partial data is deliberately not synced |
 | Pagination/count/metadata changed | Valid list drift is retried as a fresh full snapshot up to three total attempts (1s/2s backoff). If exhausted, let edits settle and run a new preview. Malformed responses are not retried; never treat a failed snapshot as an empty list |
+| Trakt inconsistent immediately after an acknowledged write | Post-write visibility verification gets up to five full reads with 2/5/10/20s waits. Temporary rank/entry overlap is reread, never accepted/deduplicated. No write is replayed. If exhausted, preserve state, inspect actual lists and run a fresh preview |
 | Addition verification or partial write failed | Some changes may already exist. Inspect actual lists and rerun preview before another apply; baseline did not advance for the failed rule |
 | Refusing to empty / delete threshold exceeded | Confirm intended source/policy/removals before consciously adjusting limits. `allow_empty` does not bypass count/fraction safeguards |
 | Bidirectional mirror requires baseline/bootstrap | For a truly new rule, bootstrap-preview then explicit bootstrap-apply. Never use bootstrap to overwrite corrupt/mismatched existing history |
