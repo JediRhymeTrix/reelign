@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.1 — 2026-11-11
+
+- Accept complete Trakt snapshots with positive, unique, strictly ascending rank
+  labels even when manual deletions leave gaps. Rank labels are not pagination
+  offsets; valid gaps must reach direction-aware reconciliation instead of
+  permanently failing the rule before planning.
+- One-way mirrors restore missing target items from their authority; reverse,
+  bidirectional and additions-only policies retain their existing semantics.
+  Gaps alone cause no writes when membership and relative order already match.
+- Preserve duplicate-entry/rank, conflicting-ID, metadata/count, page geometry,
+  partition confirmation and unknown-operation no-replay protections.
+- Add regression coverage for multi-page gaps, staged restoration and direction/
+  deletion-policy semantics. No schedule, state-format or retry-budget changes.
+
 ## 1.2.0 — 2026-11-06
 
 - Use the documented typed/sorted Trakt list route instead of bare `/items`.

@@ -29,8 +29,15 @@ unsupported seasons/episodes fail explicitly rather than being silently filtered
 Every response must supply its effective page size, page/count headers and complete
 rows. Multi-page reads are independently confirmed with a second complete traversal
 using different page boundaries (at most 100 items/page). Entry IDs, typed identities,
-ranks and addition dates must agree. Missing headers, gaps, partial pages, conflicting
+ranks and addition dates must agree. Missing headers, partial pages, conflicting
 identities and unsupported media fail closed; no deduplication repairs a snapshot.
+
+Rank labels must be positive, unique and strictly ascending, but need not be
+consecutive. Trakt can leave gaps after manual removals. Complete sparse-rank
+snapshots are reconciled according to direction/deletion policy: deleting a target
+item in a one-way mirror restores it from the authority; deleting an authoritative
+item propagates under mirror rules. Gaps alone are not membership loss or a reason
+to rewrite matching lists. Contradictory identities or mixed pages remain errors.
 
 This detects many mixed-generation responses but **does not provide API snapshot
 isolation**. Two matching observations are not a server transaction. If distinct

@@ -538,7 +538,7 @@ class Trakt(_Provider):
         if kind not in {"movie", "show"}:
             raise SyncError("Only movie/show items are supported; refusing partial sync")
         ids = _object(_object(row.get(kind)).get("ids"))
-        return Item(kind, dict(ids), row.get("listed_at"), _integer(row.get("rank")),
+        return Item(kind, dict(ids), row.get("listed_at"), _integer(row.get("rank"), 1),
                     _integer(row.get("id"), 1))
 
     @staticmethod
@@ -605,8 +605,13 @@ class Trakt(_Provider):
             expected_rows = min(limit, max(0, count - (page - 1) * limit))
             if len(rows) != expected_rows:
                 raise SyncError("Trakt page row count does not match effective pagination")
-            if any(item.rank != len(items) + offset for offset, item in enumerate(rows, 1)):
-                raise _SnapshotOverlap("Trakt rank sequence has gaps or is not ascending")
+            previous_rank = items[-1].rank if items else 0
+            for item in rows:
+                # Ranks are persistent ordering labels, not pagination offsets.
+                # Manual removals can leave holes without omitting any rows.
+                if item.rank <= previous_rank:
+                    raise _SnapshotOverlap("Trakt rank sequence is not strictly ascending")
+                previous_rank = item.rank
             items.extend(rows)
             if len(items) > count:
                 raise SyncError("Trakt pagination contains excess items")

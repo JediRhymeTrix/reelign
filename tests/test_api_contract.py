@@ -42,7 +42,8 @@ class ListApi:
                 field = "deleted"
             else:
                 for item in body["movies"]:
-                    self.rows.append(trakt_item(item["ids"]["trakt"], len(self.rows) + 1))
+                    self.rows.append(trakt_item(item["ids"]["trakt"],
+                        max((row["rank"] for row in self.rows), default=0) + 1))
                 field = "added"
             if not self.stale_summary:
                 self.meta["item_count"] = len(self.rows)
@@ -105,8 +106,8 @@ class ApiContractTests(unittest.TestCase):
             self.read(Trakt(TRAKT_URL, api, "owner"))
         self.assertEqual(len(api.calls), 2)
 
-    def test_rank_gaps_and_server_order_are_not_locally_repaired(self):
-        for ranks in ([1, 3], [2, 1]):
+    def test_invalid_rank_or_server_order_are_not_locally_repaired(self):
+        for ranks in ([0, 3], [2, 1]):
             api = ListApi(2)
             for row, rank in zip(api.rows, ranks):
                 row["rank"] = rank
