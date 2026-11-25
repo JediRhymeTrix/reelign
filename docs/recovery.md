@@ -31,8 +31,9 @@ before permitting more mutations. No baseline advances while pending. Healthy
 pending execution may exit zero; inspect the explicit JSON/job-summary status.
 
 `blocked`/nonzero means an unknown outcome, partial/malformed acknowledgement,
-changed rule/list identity, regressed evidence or pending work older than24hours
-needs review. An absent effect cannot prove an ambiguous request never executed.
+changed rule/list identity, regressed evidence or work still unverified after 24 hours
+needs review. Age alone does not prevent a later run from verifying recorded effects.
+An absent effect cannot prove an ambiguous request never executed.
 Never delete journals, restore old baselines or repeat writes merely to clear it.
 
 Pause concurrent writers and preserve the newest encrypted state/artifact. Inspect

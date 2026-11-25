@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 2026-11-25
+
+- Keep verifying pending journals after 24 hours. If fresh observations prove
+  the recorded effects, resume normally without replaying them. If evidence is
+  still missing, inconsistent, or regresses during execution, report the block.
+
 ## 1.2.1 — 2026-11-11
 
 - Accept complete Trakt snapshots with positive, unique, strictly ascending rank
