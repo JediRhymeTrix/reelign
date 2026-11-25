@@ -18,6 +18,14 @@ class Blocked(SyncError):
     """Ambiguous intent or conflicting recovery requires explicit review."""
 
 
+def _awaiting_evidence(journal, reason):
+    # Age escalates missing evidence, not a write we can positively verify.
+    created = datetime.fromisoformat(journal["created_at"].replace("Z", "+00:00"))
+    if (datetime.now(timezone.utc) - created).total_seconds() > 86400:
+        return Blocked(f"Pending reconciliation exceeded 24 hours: {reason}; reviewed recovery required")
+    return Deferred(reason)
+
+
 def _date(value):
     if not isinstance(value, str):
         raise SyncError("Invalid journal timestamp")
@@ -287,7 +295,7 @@ class Session:
             if check["side"] == side and not _verified(check, snapshot, context):
                 if original["outcome"] in {"intent", "unknown", "invalid_response"}:
                     raise Blocked("Prior operation evidence regressed; refusing automatic replay")
-                raise Deferred("A journaled effect is not visible in the current execution snapshot")
+                raise _awaiting_evidence(self.journal, "A journaled effect is not visible in the current execution snapshot")
         self.verified_operations = len(self.journal["operations"])
 
     def __enter__(self):
@@ -374,8 +382,8 @@ class Session:
             if isinstance(error, ApiError) or "partial" in str(error).lower() or "could not" in str(error).lower():
                 return False
             from .providers import _SnapshotChanged, _SnapshotOverlap
-            if isinstance(error, (_SnapshotChanged, _SnapshotOverlap, Deferred)):
-                raise Deferred("Pending verification; confirmed baseline unchanged") from None
+            if isinstance(error, (_SnapshotChanged, _SnapshotOverlap)):
+                raise _awaiting_evidence(self.journal, "Provider snapshot is not yet consistent") from None
         return False
 
     def commit(self, baseline):
@@ -434,8 +442,6 @@ def resume(rule, providers, journal):
     if (journal["fingerprint"] != rule.fingerprint
             or [parse_url(url) for url in journal["urls"]] != [parse_url(rule.source), parse_url(rule.destination)]):
         raise Blocked("Pending reconciliation configuration changed; reviewed recovery required")
-    if (datetime.now(timezone.utc) - datetime.fromisoformat(journal["created_at"].replace("Z", "+00:00"))).total_seconds() > 86400:
-        raise Blocked("Pending reconciliation exceeded 24 hours; reviewed recovery required")
     if any(op["outcome"] == "invalid_response" for op in journal["operations"]):
         raise Blocked("Prior mutation response was partial or malformed; reviewed recovery required")
     current = []
@@ -458,7 +464,7 @@ def resume(rule, providers, journal):
             raise
         if any(op["outcome"] in {"intent", "unknown"} for op in journal["operations"]):
             raise Blocked("Unknown operation cannot be verified from inconsistent observations") from None
-        raise Deferred("Pending verification; provider snapshot is not yet consistent") from None
+        raise _awaiting_evidence(journal, "Provider snapshot is not yet consistent") from None
     expected = [decode(value) for value in journal["expected"]]
     for op, check in _outstanding(journal["operations"]):
         if op["outcome"] == "invalid_response":
@@ -469,7 +475,7 @@ def resume(rule, providers, journal):
         if not _verified(check, current[op["side"]], context):
             if op["outcome"] in {"intent", "unknown"}:
                 raise Blocked("Unknown operation outcome; refusing automatic replay")
-            raise Deferred("Acknowledged operation is pending verification")
+            raise _awaiting_evidence(journal, "Acknowledged operation is not yet verified")
         if op["outcome"] in {"intent", "unknown"}:
             expected[op["side"]] = _project(expected[op["side"]], check["action"],
                 items(check["items"]), check["entries"], check["fields"])

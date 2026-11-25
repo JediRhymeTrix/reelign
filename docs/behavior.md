@@ -95,7 +95,8 @@ run. Its report is `status: pending_verification`, `converged: false`; the confi
 baseline does not advance and no further mutations occur for that rule. Healthy
 deferral exits zero, which means the executor safely deferred—not that lists synced.
 Dependent endpoint readers/writers are blocked, including across selection filters.
-After24hours unresolved pending work becomes action-required/nonzero. There is no
+After 24 hours, unresolved pending work becomes action-required/nonzero. Later
+runs still check for evidence and can resume once all recorded effects verify. There is no
 automatic whole-workflow rerun or consistency deadline guaranteed by Trakt.
 
 ### Mutation outcomes and quota compliance

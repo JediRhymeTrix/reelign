@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from test_staged import StagedTests, SOURCE, TARGET
 from syncer.model import Item, Snapshot, SyncError
+from syncer.providers import Trakt
 from syncer.staged import _operation, _verified, resume, Deferred, Blocked
 
 
@@ -52,13 +53,51 @@ class StagedRegressions(StagedTests):
                 self.resume(self.rule, self.providers, journal)
         self.assertNotIsInstance(caught.exception, Deferred)
 
-    def test_expired_pending_is_action_required(self):
+    def expired_reorder(self):
         snapshots, result = self.prepare()
         session = self.Session(self.rule, self.providers, snapshots, result, self.state, self.store)
-        journal = session.journal
+        with self.assertRaises(Deferred):
+            with session:
+                self.providers[1].reorder(list(reversed(snapshots[1].items)), snapshots[1])
+                raise Deferred("wait")
+        journal = self.store.load()["journals"]["test"]
         journal['created_at'] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
-        with self.assertRaises(Blocked):
-            self.resume(self.rule, self.providers, journal)
+        return journal
+
+    def test_expired_verified_reorder_can_resume_without_replay(self):
+        journal = self.expired_reorder()
+        _, actual, _ = self.resume(self.rule, self.providers, journal)
+        self.assertEqual([item.entry_id for item in sorted(actual.items, key=lambda item: item.rank)],
+                         journal["operations"][-1]["entries"])
+        self.assertEqual(sum(call[0] == "POST" for call in self.apis[1].calls), 1)
+
+    def test_expired_unverified_reorder_is_action_required(self):
+        journal = self.expired_reorder()
+        self.apis[1].rows.reverse()
+        for rank, row in enumerate(self.apis[1].rows, 1):
+            row["rank"] = rank
+        fresh = [Trakt(url, api, "owner") for url, api in zip((SOURCE, TARGET), self.apis)]
+        with self.assertRaisesRegex(Blocked, "exceeded 24 hours: Acknowledged operation is not yet verified"):
+            self.resume(self.rule, fresh, journal)
+        self.assertEqual(sum(call[0] == "POST" for call in self.apis[1].calls), 1)
+
+    def test_expired_inconsistent_snapshot_is_action_required(self):
+        from syncer.providers import _SnapshotChanged
+        journal = self.expired_reorder()
+        with patch.object(self.providers[1], "snapshot", side_effect=_SnapshotChanged("moving")):
+            with self.assertRaisesRegex(Blocked, "exceeded 24 hours"):
+                self.resume(self.rule, self.providers, journal)
+
+    def test_expired_evidence_regression_during_execution_is_action_required(self):
+        journal = self.expired_reorder()
+        self.state["journals"][self.rule.id] = journal
+        snapshots = self.snapshots()
+        session = self.Session(self.rule, self.providers, snapshots, self.prepare()[1], self.state, self.store)
+        regressed = deepcopy(snapshots[1])
+        for rank, item in enumerate(reversed(regressed.items), 1):
+            item.rank = rank
+        with self.assertRaisesRegex(Blocked, "exceeded 24 hours"):
+            session.observe(self.providers[1], regressed)
 
     def test_large_mdblist_reorder_rejects_before_first_chunk(self):
         from syncer.staged import encode
